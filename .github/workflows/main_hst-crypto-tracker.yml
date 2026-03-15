@@ -22,7 +22,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: mongodb, bcmath, mbstring  # 👈 必须加这一行
+          extensions: mongodb, bcmath, mbstring
           coverage: none
 
       - name: Check if composer.json exists
@@ -33,7 +33,8 @@ jobs:
 
       - name: Run composer install if composer.json exists
         if: steps.check_files.outputs.files_exists == 'true'
-        run: composer validate --no-check-publish && composer install --prefer-dist --no-progress
+        # 💡 下面这行末尾加了忽略扩展版本检查的指令
+        run: composer validate --no-check-publish && composer install --prefer-dist --no-progress --ignore-platform-req=ext-mongodb
 
 
       - name: Upload artifact for deployment job
@@ -69,4 +70,3 @@ jobs:
           app-name: 'hst-crypto-tracker'
           slot-name: 'Production'
           package: .
-          
