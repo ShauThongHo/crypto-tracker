@@ -34,3 +34,7 @@ Route::get('/sync', [AssetSyncController::class, 'syncPrices']);
 Route::get('/', function () {
     return view('map'); // 这里指向 resources/views/map.blade.php
 });
+// 专门给保活机器人访问的接口，不查数据库，极速响应
+Route::get('/health-check', function () {
+    return response('OK', 200);
+});
