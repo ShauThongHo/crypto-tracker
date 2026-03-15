@@ -561,11 +561,21 @@
             myChart.setOption({
                 tooltip: {
                     trigger: 'axis', backgroundColor: 'rgba(15, 23, 42, 0.9)', borderColor: '#334155', textStyle: { color: '#fff' },
-                    formatter: (p) => `<div class="font-bold">${new Date(p[0].value[0]).toLocaleTimeString()}</div><div class="text-sky-400">${formatMoney(p[0].value[1])}</div>`
+                    formatter: (p) => {
+                        // 🌟 1. 优化 Tooltip (鼠标悬浮提示)：手动提取时和分，去掉秒
+                        let d = new Date(p[0].value[0]);
+                        let timeStr = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+                        return `<div class="font-bold">${timeStr}</div><div class="text-sky-400">${formatMoney(p[0].value[1])}</div>`;
+                    }
                 },
                 grid: { left: '4%', right: '4%', bottom: '10%', top: '15%', containLabel: true },
                 xAxis: {
-                    type: 'time', axisLabel: { color: '#64748b', fontSize: 10 },
+                    type: 'time', 
+                    axisLabel: { 
+                        color: '#64748b', 
+                        fontSize: 10,
+                        formatter: '{HH}:{mm}' // 🌟 2. 优化 X 轴：强制 ECharts 只显示 小时:分钟
+                    },
                     axisLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.1)' } },
                     splitLine: { show: true, lineStyle: { color: 'rgba(255, 255, 255, 0.03)', type: 'dashed' } }
                 },
