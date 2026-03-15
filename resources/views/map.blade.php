@@ -18,17 +18,38 @@
         .nav-active {
             background: rgba(56, 189, 248, 0.1);
             color: #38bdf8;
-            border-right: 3px solid #38bdf8;
         }
 
         .nav-inactive {
             color: #94a3b8;
-            border-right: 3px solid transparent;
         }
 
         .nav-inactive:hover {
             background: #0f172a;
             color: #e2e8f0;
+        }
+
+        /* 📱 移动端底部导航样式 (蓝条在上方) */
+        @media (max-width: 767px) {
+            .nav-active {
+                border-top: 2px solid #38bdf8;
+                border-radius: 0.5rem;
+            }
+
+            .nav-inactive {
+                border-top: 2px solid transparent;
+            }
+        }
+
+        /* 💻 桌面端侧边栏样式 (蓝条在右边) */
+        @media (min-width: 768px) {
+            .nav-active {
+                border-right: 3px solid #38bdf8;
+            }
+
+            .nav-inactive {
+                border-right: 3px solid transparent;
+            }
         }
 
         .bento-grid {
@@ -82,34 +103,46 @@
     </style>
 </head>
 
-<body class="flex h-screen w-full">
+<body class="flex flex-col md:flex-row h-screen w-full bg-[#020617] overflow-hidden">
 
-    <aside class="w-64 bg-[#090e17] border-r border-slate-800/60 flex flex-col shrink-0">
-        <div class="h-24 flex items-center px-8">
+    <div
+        class="md:hidden flex items-center justify-center h-14 shrink-0 bg-[#090e17] border-b border-slate-800/60 z-40 relative">
+        <h1 class="text-lg font-bold tracking-widest text-white">Crypto Tracker<span class="text-sky-400">.</span></h1>
+    </div>
+
+    <aside
+        class="fixed bottom-0 left-0 w-full bg-[#090e17] border-t border-slate-800/60 z-50 md:relative md:w-64 md:h-full md:border-t-0 md:border-r md:flex md:flex-col shrink-0 pb-safe">
+
+        <div class="hidden md:flex h-24 items-center px-8 shrink-0">
             <h1 class="text-2xl font-bold tracking-widest text-white">Crypto Tracker<span
                     class="text-sky-400 text-3xl">.</span></h1>
         </div>
-        <nav class="flex-1 mt-4 space-y-2 px-3">
+
+        <nav
+            class="flex flex-row md:flex-col flex-1 px-2 py-1.5 md:mt-4 md:space-y-2 md:px-3 justify-around md:justify-start">
+
             <button data-target="view-portfolio"
-                class="nav-btn nav-active w-full flex items-center gap-4 px-5 py-3.5 rounded-xl font-medium text-sm transition-all">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="nav-btn nav-active flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all">
+                <svg class="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z">
                     </path>
                 </svg>
                 资产总览
             </button>
+
             <button data-target="view-history"
-                class="nav-btn nav-inactive w-full flex items-center gap-4 px-5 py-3.5 rounded-xl font-medium text-sm transition-all">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="nav-btn nav-inactive flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all">
+                <svg class="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                 </svg>
                 盈亏历史
             </button>
+
             <button data-target="view-settings"
-                class="nav-btn nav-inactive w-full flex items-center gap-4 px-5 py-3.5 rounded-xl font-medium text-sm transition-all">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="nav-btn nav-inactive flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all">
+                <svg class="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
                     </path>
@@ -121,9 +154,9 @@
         </nav>
     </aside>
 
-    <main class="flex-1 h-full overflow-y-auto bg-[#020617] relative no-scrollbar">
+    <main class="flex-1 w-full h-full overflow-y-auto relative no-scrollbar pb-20 md:pb-0">
 
-        <section id="view-portfolio" class="content-view block p-8 lg:p-12">
+        <section id="view-portfolio" class="content-view block p-4 md:p-8 lg:p-12">
             <header class="mb-8 flex items-end justify-between">
                 <div>
                     <h2 class="text-slate-500 text-sm font-medium tracking-widest uppercase mb-2">My Portfolio</h2>
@@ -173,18 +206,53 @@
             <div class="bento-grid" id="grid-container"></div>
         </section>
 
-        <section id="view-history" class="content-view hidden p-8 lg:p-12">
-            <header class="mb-10">
+        <section id="view-history" class="content-view hidden p-4 md:p-8 lg:p-12 flex-col h-full overflow-y-auto no-scrollbar">
+            <header class="mb-8 shrink-0">
                 <h2 class="text-slate-500 text-sm font-medium tracking-widest uppercase mb-2">History</h2>
-                <div class="text-3xl font-light text-white">盈亏历史</div>
+                <div class="text-3xl font-light text-white">盈亏日历</div>
             </header>
-            <div
-                class="w-full h-64 border border-dashed border-slate-700/50 rounded-2xl flex items-center justify-center text-slate-500">
-                准备接入历史快照数据...
-            </div>
-        </section>
 
-        <section id="view-settings" class="content-view hidden p-8 lg:p-12">
+            <div
+                class="bg-[#0f172a] border border-slate-800 rounded-2xl p-6 shadow-xl mb-6 shrink-0 overflow-x-auto no-scrollbar">
+                <h3 class="text-slate-400 font-bold mb-4 text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                        </path>
+                    </svg>
+                    年度热力总览 (2026)
+                </h3>
+                <div id="calendar-echarts-container" class="w-full min-w-[800px] h-[180px]"></div>
+            </div>
+
+            <<div class="bg-[#0f172a] border border-slate-800 rounded-2xl p-6 shadow-xl shrink-0 flex flex-col mb-10">
+                <div class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+                    <h3 class="text-white font-bold text-lg tracking-wide" id="month-view-title">月度明细</h3>
+                    <div class="flex gap-2">
+                        <button onclick="changeMonth(-1)"
+                            class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 text-xs font-bold transition-all shadow-sm">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 19l-7-7 7-7"></path>
+                            </svg>
+                            上个月
+                        </button>
+                        <button onclick="changeMonth(1)"
+                            class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 text-xs font-bold transition-all shadow-sm">
+                            下个月
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7">
+                                </path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="w-full overflow-x-auto overflow-y-auto no-scrollbar rounded-xl">
+                    <div id="month-echarts-container" style="min-width: 900px; height: 800px;"></div>
+                </div>
+                </div>
+        </section>
+        <section id="view-settings" class="content-view hidden p-4 md:p-8 lg:p-12">
             <header class="mb-10">
                 <h2 class="text-slate-500 text-sm font-medium tracking-widest uppercase mb-2">Preferences</h2>
                 <div class="text-3xl font-light text-white">系统设置</div>
@@ -458,15 +526,20 @@
         function initNavigation() {
             document.querySelectorAll('.nav-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    // 切换按钮样式
                     document.querySelectorAll('.nav-btn').forEach(b => b.classList.replace('nav-active', 'nav-inactive'));
                     btn.classList.replace('nav-inactive', 'nav-active');
 
-                    // 切换视图显示
                     document.querySelectorAll('.content-view').forEach(v => v.classList.add('hidden'));
                     const targetId = btn.getAttribute('data-target');
                     const targetView = document.getElementById(targetId);
                     if (targetView) targetView.classList.remove('hidden');
+
+                    // 🌟 修复图表挤压 Bug：延迟 50ms 等待页面展开后，强制所有图表重新适应宽度
+                    setTimeout(() => {
+                        if (myChart) myChart.resize();
+                        if (historyCalendarChart) historyCalendarChart.resize();
+                        if (historyMonthChart) historyMonthChart.resize();
+                    }, 50);
                 });
             });
         }
@@ -484,6 +557,7 @@
                 const snapData = await snapRes.json();
                 globalSnapshotData = snapData;
                 renderChart(snapData);
+                renderCalendarHistory(snapData)
             } catch (e) { console.error("❌ 数据加载失败:", e); }
         }
 
@@ -570,9 +644,9 @@
                 },
                 grid: { left: '4%', right: '4%', bottom: '10%', top: '15%', containLabel: true },
                 xAxis: {
-                    type: 'time', 
-                    axisLabel: { 
-                        color: '#64748b', 
+                    type: 'time',
+                    axisLabel: {
+                        color: '#64748b',
                         fontSize: 10,
                         formatter: '{HH}:{mm}' // 🌟 2. 优化 X 轴：强制 ECharts 只显示 小时:分钟
                     },
@@ -588,6 +662,168 @@
                     itemStyle: { color: '#38bdf8' }, lineStyle: { width: 2 },
                     areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(56, 189, 248, 0.15)' }, { offset: 1, color: 'rgba(56, 189, 248, 0)' }]) }
                 }]
+            }, true);
+        }
+        let historyCalendarChart = null;
+        let historyMonthChart = null;
+        let currentViewMonthDate = new Date(); // 记录当前查看的月份
+
+        // 切换月份按钮触发的函数
+        window.changeMonth = function (offset) {
+            currentViewMonthDate.setMonth(currentViewMonthDate.getMonth() + offset);
+            renderCalendarHistory(globalSnapshotData); // 重新渲染
+        }
+
+        // --- 盈亏日历渲染 (高级精装版 + 颜色映射与负号修复) ---
+        function renderCalendarHistory(data) {
+            if (!data || !data.times || data.times.length === 0) return;
+
+            const yearDom = document.getElementById('calendar-echarts-container');
+            const monthDom = document.getElementById('month-echarts-container');
+
+            if (!historyCalendarChart) historyCalendarChart = echarts.init(yearDom);
+            if (!historyMonthChart) historyMonthChart = echarts.init(monthDom);
+
+            // 1. 数据按天分组
+            const dailyDataMap = {};
+            data.times.forEach((t, i) => {
+                const d = new Date(t);
+                const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                if (!dailyDataMap[dateStr]) dailyDataMap[dateStr] = [];
+                dailyDataMap[dateStr].push(isMYR ? data.values[i] * MYR_RATE : data.values[i]);
+            });
+
+            // 2. 补全每一天的数据
+            const calendarSeriesData = [];
+            let previousDayClose = null;
+            const currentYear = new Date().getFullYear();
+            const startDate = new Date(currentYear, 0, 1);
+            const today = new Date();
+
+            for (let d = new Date(startDate); d <= today; d.setDate(d.getDate() + 1)) {
+                const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                if (dailyDataMap[dateStr]) {
+                    const values = dailyDataMap[dateStr];
+                    const dayOpen = previousDayClose !== null ? previousDayClose : values[0];
+                    const dayClose = values[values.length - 1];
+                    const dailyPnL = dayClose - dayOpen;
+                    const dailyPct = dayOpen === 0 ? 0 : (dailyPnL / dayOpen) * 100;
+                    // 数据格式: [0:日期, 1:盈亏, 2:百分比, 3:总资产, 4:是否有数据]
+                    calendarSeriesData.push([dateStr, dailyPnL, dailyPct, dayClose, true]);
+                    previousDayClose = dayClose;
+                } else {
+                    calendarSeriesData.push([dateStr, 0, 0, previousDayClose || 0, false]);
+                }
+            }
+
+            // --- 提取公共的 Tooltip (修复了负号显示) ---
+            const commonTooltip = {
+                backgroundColor: 'rgba(15, 23, 42, 0.95)', borderColor: '#334155', padding: 12, textStyle: { color: '#f8fafc' },
+                formatter: function (p) {
+                    const [date, pnl, pct, total, hasData] = p.value;
+                    if (!hasData && total === 0) return `<div class="font-bold text-slate-500">${date}<br>暂无数据</div>`;
+
+                    const isUp = pnl > 0; const isDown = pnl < 0;
+                    const colorClass = isUp ? 'text-emerald-400' : (isDown ? 'text-rose-400' : 'text-slate-400');
+                    const sign = isUp ? '+' : (isDown ? '-' : ''); // 🎯 修复：正确显示负号
+                    const valStr = isMYR ? 'RM ' + Math.abs(pnl).toFixed(2) : '$' + Math.abs(pnl).toFixed(2);
+
+                    return `
+                        <div class="font-bold text-slate-300 border-b border-slate-700 pb-2 mb-2">${date}</div>
+                        <div class="flex justify-between gap-6 mb-1 text-xs"><span class="text-slate-500">总资产:</span><span class="font-mono font-bold">${formatMoney(total)}</span></div>
+                        <div class="flex justify-between gap-6 mb-1 text-xs"><span class="text-slate-500">当日盈亏:</span><span class="font-mono font-bold ${colorClass}">${sign}${valStr}</span></div>
+                        <div class="flex justify-between gap-6 text-xs"><span class="text-slate-500">涨跌幅:</span><span class="font-mono font-bold ${colorClass}">${sign}${Math.abs(pct).toFixed(2)}%</span></div>
+                    `;
+                }
+            };
+
+            // 🌟 3. 渲染年度热力图
+            historyCalendarChart.setOption({
+                tooltip: commonTooltip,
+                visualMap: {
+                    dimension: 1, // 🎯 核心修复：强制 ECharts 只看第2个数据 (也就是盈亏金额) 来决定颜色！
+                    show: false, min: -1, max: 1,
+                    pieces: [
+                        { min: 0.01, color: '#10b981' }, // 赚：翠绿
+                        { min: -0.01, max: 0.01, color: '#334155' }, // 平：灰
+                        { max: -0.01, color: '#f43f5e' } // 亏：玫瑰红
+                    ]
+                },
+                calendar: {
+                    top: 25, left: 40, right: 20,
+                    cellSize: [16, 16], range: currentYear.toString(),
+                    itemStyle: { color: '#1e293b', borderWidth: 3, borderColor: '#0f172a' },
+                    splitLine: { show: false }, yearLabel: { show: false },
+                    monthLabel: { color: '#64748b', fontSize: 10, nameMap: 'ZH' }, dayLabel: { color: '#64748b', fontSize: 10, nameMap: 'ZH' }
+                },
+                series: { type: 'heatmap', coordinateSystem: 'calendar', data: calendarSeriesData, itemStyle: { borderRadius: 4 } }
+            }, true);
+
+            // 🌟 4. 渲染月度大日历
+            const viewY = currentViewMonthDate.getFullYear();
+            const viewM = currentViewMonthDate.getMonth() + 1;
+            document.getElementById('month-view-title').innerText = `${viewY}年 ${viewM}月 资产走势`;
+
+            const currentMonthData = calendarSeriesData.filter(item => {
+                const dateObj = new Date(item[0]);
+                return dateObj.getFullYear() === viewY && (dateObj.getMonth() + 1) === viewM;
+            });
+
+            historyMonthChart.setOption({
+                tooltip: commonTooltip,
+                visualMap: {
+                    dimension: 1, // 🎯 核心修复：月度日历的背景色也强制看盈亏金额！
+                    show: false, min: -1, max: 1,
+                    pieces: [
+                        { min: 0.01, color: 'rgba(16, 185, 129, 0.05)' }, // 赚：微弱绿光背景
+                        { min: -0.01, max: 0.01, color: 'rgba(15, 23, 42, 0.5)' }, // 平：暗色背景
+                        { max: -0.01, color: 'rgba(244, 63, 94, 0.05)' }  // 亏：微弱红光背景
+                    ]
+                },
+                calendar: {
+                    top: 50, left: 20, right: 20, bottom: 20, orient: 'vertical',
+                    range: `${viewY}-${String(viewM).padStart(2, '0')}`,
+                    cellSize: ['auto', 'auto'],
+                    itemStyle: { color: '#0f172a', borderWidth: 1, borderColor: '#1e293b' },
+                    splitLine: { show: false }, yearLabel: { show: false }, monthLabel: { show: false },
+                    dayLabel: { color: '#94a3b8', margin: 15, nameMap: 'ZH', fontWeight: 'bold', firstDay: 0 }
+                },
+                series: [
+                    {
+                        type: 'heatmap', coordinateSystem: 'calendar', data: currentMonthData,
+                        label: {
+                            show: true, position: 'insideTopLeft', offset: [10, 10],
+                            formatter: function (p) { return `{date|${new Date(p.value[0]).getDate()}}`; },
+                            rich: { date: { color: '#64748b', fontSize: 13, fontWeight: 'bold' } }
+                        }
+                    },
+                    {
+                        type: 'scatter', coordinateSystem: 'calendar', data: currentMonthData,
+                        symbolSize: 0, silent: true,
+                        label: {
+                            show: true, position: 'inside',
+                            formatter: function (p) {
+                                const [dateStr, pnl, pct, total, hasData] = p.value;
+                                if (!hasData || (pnl === 0 && total === 0)) return `{empty|--}`;
+                                if (pnl === 0) return `{neutral|±0.00}`;
+
+                                const isUp = pnl > 0;
+                                const isDown = pnl < 0;
+                                const sign = isUp ? '+' : (isDown ? '-' : ''); // 🎯 修复：红色文字加上负号
+                                const color = isUp ? '{up|' : '{down|';
+                                const valStr = isMYR ? 'RM ' + Math.abs(pnl).toFixed(2) : '$' + Math.abs(pnl).toFixed(2);
+
+                                return `${color}${sign}${valStr}}`;
+                            },
+                            rich: {
+                                up: { color: '#34d399', fontSize: 16, fontWeight: '900', textShadowBlur: 8, textShadowColor: 'rgba(52, 211, 153, 0.3)' },
+                                down: { color: '#f43f5e', fontSize: 16, fontWeight: '900', textShadowBlur: 8, textShadowColor: 'rgba(244, 63, 94, 0.3)' },
+                                neutral: { color: '#64748b', fontSize: 14, fontWeight: 'bold' },
+                                empty: { color: '#1e293b', fontSize: 14 }
+                            }
+                        }
+                    }
+                ]
             }, true);
         }
 
@@ -771,6 +1007,7 @@
                 document.getElementById('currency-toggle-knob').classList.toggle('translate-x-6');
                 renderPortfolio(globalPortfolioData);
                 renderChart(globalSnapshotData);
+                renderCalendarHistory(globalSnapshotData);
             });
         }
 
@@ -875,6 +1112,58 @@
                 text.innerText = '立即同步价格';
                 btn.disabled = false;
                 btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+        // --- 💀 危险区域 (Danger Zone) 执行逻辑 ---
+        async function dangerAction(actionType) {
+            let confirmMsg = "";
+            let expectedWord = "";
+            let apiUrl = "";
+
+            // 1. 根据不同按钮，配置不同的警告语和接口
+            if (actionType === 'snapshots') {
+                confirmMsg = "⚠️ 警告：这将清空所有图表走势数据！\n请输入 DELETE 确认清空：";
+                expectedWord = "DELETE";
+                apiUrl = '/api/danger/snapshots';
+            } else if (actionType === 'assets') {
+                confirmMsg = "⚠️ 警告：这将清空看板上的【所有资产记录】！\n请输入 DELETE 确认移除：";
+                expectedWord = "DELETE";
+                apiUrl = '/api/danger/assets';
+            } else if (actionType === 'wipe') {
+                confirmMsg = "🚨 终极警告：不可逆操作！将删除资产、历史、钱包等一切数据！\n请输入 WIPE 确认毁灭：";
+                expectedWord = "WIPE";
+                apiUrl = '/api/danger/wipe';
+            }
+
+            // 2. 弹窗要求用户输入验证词
+            const userInput = prompt(confirmMsg);
+
+            // 3. 校验输入
+            if (userInput !== expectedWord) {
+                alert("❌ 验证词输入不正确或已取消，操作中止。");
+                return;
+            }
+
+            // 4. 发送毁灭请求给后端
+            try {
+                const res = await fetch(apiUrl, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (res.ok) {
+                    alert("✅ 毁灭指令执行成功！世界清静了。");
+                    location.reload(); // 直接刷新页面看空空如也的效果
+                } else {
+                    const err = await res.json();
+                    alert("❌ 操作失败: " + (err.message || "服务器拒绝了毁灭请求"));
+                }
+            } catch (e) {
+                console.error(e);
+                alert("❌ 网络错误或接口未连通");
             }
         }
     </script>
