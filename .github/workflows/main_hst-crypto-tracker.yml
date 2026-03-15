@@ -68,5 +68,4 @@ jobs:
         id: deploy-to-webapp
         with:
           app-name: 'hst-crypto-tracker'
-          slot-name: 'Production'
           package: .
