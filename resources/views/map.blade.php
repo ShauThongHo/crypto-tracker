@@ -78,6 +78,15 @@
             }
         }
 
+        /* 注入环境变量，处理不同手机的底部黑条 */
+        :root {
+            --safe-area-bottom: env(safe-area-inset-bottom);
+        }
+
+        .pb-safe {
+            padding-bottom: calc(5rem + var(--safe-area-bottom, 0px));
+        }
+
         .bento-card {
             background: #0f172a;
             border: 1px solid #1e293b;
@@ -111,7 +120,8 @@
     </div>
 
     <aside
-        class="fixed bottom-0 left-0 w-full bg-[#090e17] border-t border-slate-800/60 z-50 md:relative md:w-64 md:h-full md:border-t-0 md:border-r md:flex md:flex-col shrink-0 pb-safe">
+        class="fixed bottom-0 left-0 w-full bg-[#090e17]/95 backdrop-blur-md border-t border-slate-800/60 z-50 md:relative md:w-64 md:h-full md:border-t-0 md:border-r md:flex md:flex-col shrink-0"
+        style="padding-bottom: var(--safe-area-bottom, 0px);">
 
         <div class="hidden md:flex h-24 items-center px-8 shrink-0">
             <h1 class="text-2xl font-bold tracking-widest text-white">Crypto Tracker<span
@@ -154,7 +164,7 @@
         </nav>
     </aside>
 
-    <main class="flex-1 w-full h-full overflow-y-auto relative no-scrollbar pb-20 md:pb-0">
+    <main class="flex-1 w-full h-full overflow-y-auto relative no-scrollbar pb-32 md:pb-0">
 
         <section id="view-portfolio" class="content-view block p-4 md:p-8 lg:p-12">
             <header class="mb-8 flex items-end justify-between">
@@ -206,7 +216,8 @@
             <div class="bento-grid" id="grid-container"></div>
         </section>
 
-        <section id="view-history" class="content-view hidden p-4 md:p-8 lg:p-12 flex-col h-full overflow-y-auto no-scrollbar">
+        <section id="view-history"
+            class="content-view hidden p-4 md:p-8 lg:p-12 flex-col h-full overflow-y-auto no-scrollbar">
             <header class="mb-8 shrink-0">
                 <h2 class="text-slate-500 text-sm font-medium tracking-widest uppercase mb-2">History</h2>
                 <div class="text-3xl font-light text-white">盈亏日历</div>
