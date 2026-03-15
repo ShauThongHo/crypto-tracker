@@ -1,0 +1,37 @@
+/.phpunit.cache
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/vendor
+.env
+.env.backup
+.env.production
+.phpunit.result.cache
+Homestead.json
+Homestead.yaml
+auth.json
+npm-debug.log
+yarn-error.log
+/.fleet
+/.idea
+/.vscode
+# --- Laravel 补充 ---
+.env.*
+!.env.example  # 必须保留 example 以便在 Azure 上参考配置 Key
+/storage/framework/cache/data/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/logs/*
+
+# --- 系统 & IDE 补充 ---
+.DS_Store
+Thumbs.db
+*.bak
+*.swp
+
+# --- Azure / 部署相关 ---
+.azure/
+deployment.sh
+.user.ini      # 如果你手动调整了 PHP 内存限制，有时会产生这个
