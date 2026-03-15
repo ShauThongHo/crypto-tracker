@@ -4,9 +4,6 @@ use Illuminate\Support\Facades\Route;
 use App\Models\Asset; // 引入刚才建好的模型 (Import the model we just built)
 use App\Http\Controllers\AssetSyncController;
 
-Route::get('/', function () {
-    return view('welcome');
-});
 
 // 测试数据库连接的路由 (Route to test database connection)
 Route::get('/test-db', function () {
@@ -34,6 +31,6 @@ Route::get('/test-db', function () {
 // 访问这个网址就会触发自动更新
 Route::get('/sync', [AssetSyncController::class, 'syncPrices']);
 
-Route::get('/map', function () {
+Route::get('/', function () {
     return view('map'); // 这里指向 resources/views/map.blade.php
 });
