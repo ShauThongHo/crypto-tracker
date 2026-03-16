@@ -36,5 +36,6 @@ Route::get('/', function () {
 });
 // 专门给保活机器人访问的接口，不查数据库，极速响应
 Route::get('/health-check', function () {
-    return response('OK', 200);
+    Artisan::call('schedule:run');
+    return response("System Healthy - Scheduler Poked", 200);
 });
