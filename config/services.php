@@ -31,4 +31,9 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'coingecko' => [
+        'proxy_url' => env('CG_PROXY_URL'),
+        'proxy_key' => env('CG_PROXY_KEY'),
+    ],
+
 ];

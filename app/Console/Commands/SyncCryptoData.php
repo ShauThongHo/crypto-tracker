@@ -5,19 +5,19 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Cache; // 💡 引入缓存
+use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class SyncCryptoData extends Command
 {
     protected $signature = 'app:sync-crypto-data';
-    protected $description = '精准对齐5分钟整点，刷新价格并存入资产快照';
+    protected $description = '通过 Cloudflare Worker 中转住宅 IP 抓取价格，并存入快照';
 
     public function handle()
     {
         // --- 1. 计算对齐时间 (5分钟对齐) ---
         $now = time();
-        $interval = 300; // 5分钟 = 300秒
+        $interval = 300; 
         $alignedTimestamp = floor($now / $interval) * $interval;
         $alignedTime = Carbon::createFromTimestamp($alignedTimestamp);
         $slotKey = 'synced_slot_' . $alignedTimestamp;
@@ -31,7 +31,7 @@ class SyncCryptoData extends Command
         // --- 3. 更新状态给前端 (Syncing...) ---
         Cache::put('sync_status', 'running', 60);
 
-        $this->info("📡 正在对齐到 {$alignedTime->format('H:i:s')} 同步价格...");
+        $this->info("📡 正在通过中转站对齐到 {$alignedTime->format('H:i:s')} 同步价格...");
 
         try {
             // 获取所有需要追踪的 ID
@@ -44,30 +44,47 @@ class SyncCryptoData extends Command
                 return;
             }
 
-            // 调用 API
-            $response = Http::get("https://api.coingecko.com/api/v3/simple/price", [
+            // --- 🎯 核心修改：调用你的 Cloudflare Worker 中转站 ---
+            $proxyUrl = config('services.coingecko.proxy_url'); // 例如 https://xxx.workers.dev
+            $proxyKey = config('services.coingecko.proxy_key'); // 你的“暗号”密钥
+
+            $response = Http::withHeaders([
+                'x-proxy-key' => $proxyKey // 发送暗号给 Worker
+            ])
+            ->timeout(20)      // 手机中转响应稍慢，给 20 秒宽容时间
+            ->retry(3, 2000)   // 失败自动重试 3 次，每次间隔 2 秒
+            ->get($proxyUrl, [ // 注意：如果你的 Worker 逻辑里带了后缀，这里要加，如 $proxyUrl . '/fetch'
                 'ids' => implode(',', $ids),
                 'vs_currencies' => 'usd'
             ]);
 
             if ($response->successful()) {
                 $prices = $response->json();
+                
+                // 容错处理：有时中转返回了 200 但内容是空的
+                if (empty($prices)) {
+                    throw new \Exception("中转站响应成功但数据为空，可能手机端 API 报错。");
+                }
+
                 $totalPortfolioValue = 0;
 
                 foreach ($prices as $tokenId => $data) {
+                    if (!isset($data['usd'])) continue;
+                    
                     $price = $data['usd'];
 
-                    // A. 更新追踪表 (使用对齐后的时间)
+                    // A. 更新追踪表
                     DB::table('tracked_tokens')->where('coingecko_id', $tokenId)->update([
                         'last_price' => $price,
-                        'updated_at' => $alignedTime // 💡 统一使用对齐时间
+                        'updated_at' => $alignedTime
                     ]);
 
                     // B. 计算资产表
                     $assets = DB::table('assets')->where('coingecko_id', $tokenId)->get();
                     foreach ($assets as $asset) {
                         $newValue = (float) $asset->token_amount * $price;
-                        $targetId = $asset->_id ?? $asset->id ?? null;
+                        // 注意：Cosmos DB 的 ID 字段可能叫 id 也可能叫 _id，请根据你实际数据库确认
+                        $targetId = $asset->id ?? $asset->_id ?? null;
 
                         if ($targetId) {
                             DB::table('assets')
@@ -84,21 +101,21 @@ class SyncCryptoData extends Command
                 // C. 记录快照 (这是你图表不乱的关键)
                 DB::table('asset_snapshots')->insert([
                     'total_value_usd' => $totalPortfolioValue,
-                    'snapshot_time' => $alignedTime, // 🎯 强行存入 10:00:00, 10:05:00...
-                    'created_at' => now(), // 记录实际插入时间以便调试
+                    'snapshot_time' => $alignedTime, 
+                    'created_at' => now(), 
                 ]);
 
                 // --- 4. 锁定该槽位并更新成功状态 ---
-                Cache::put($slotKey, true, 600); // 锁定10分钟防止重复
+                Cache::put($slotKey, true, 600); 
                 Cache::put('sync_status', 'success', 3600);
                 Cache::put('last_sync_at', $alignedTime->toDateTimeString(), 3600);
 
-                $this->info("✅ 槽位 {$alignedTime->format('H:i:s')} 同步成功！");
+                $this->info("✅ 槽位 {$alignedTime->format('H:i:s')} 通过中转同步成功！");
 
             } else {
-                // 🎯 修改这一行，把具体的状态码打出来
                 $status = $response->status();
-                throw new \Exception("API 请求失败 (状态码: $status)");
+                $errorBody = $response->body();
+                throw new \Exception("中转请求失败 (状态码: $status), 详情: $errorBody");
             }
         } catch (\Exception $e) {
             Cache::put('sync_status', 'error', 3600);

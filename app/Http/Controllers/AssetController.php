@@ -12,18 +12,19 @@ use Carbon\Carbon;
 class AssetController extends Controller
 {
     /**
-     * 获取资产分布思维导图数据 (便当盒核心)
+     * 获取资产分布思维导图数据
      */
-    public function getThinkingMap()
+    public function getAssetThinkingMap()
     {
-        // 1. 获取所有资产和追踪代币
+        // 1. 获取数据，强制确保是 Collection
         $assets = DB::table('assets')->get();
-        // keyBy 可以让我们通过 coingecko_id 瞬间秒查代币详情
         $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
 
-        // 2. 计算总价值 (强制转 float 避免 CosmosDB 类型陷阱)
+        // 2. 这里的 sum 增加判断，防止 int + array 报错
         $totalValue = $assets->sum(function ($item) {
-            return is_numeric($item->value_usd) ? (float) $item->value_usd : 0;
+            // 🎯 关键：检查字段是否存在且是数字
+            $val = $item->value_usd ?? $item->balance_usd ?? 0;
+            return is_numeric($val) ? (float) $val : 0;
         });
 
         $tree = [
@@ -32,89 +33,122 @@ class AssetController extends Controller
             'children' => []
         ];
 
-        // 3. 按来源分组
-        $groupedBySource = $assets->groupBy('source_name');
-
-        foreach ($groupedBySource as $sourceName => $sourceAssets) {
-            $sourceValue = $sourceAssets->sum(function ($item) {
-                return is_numeric($item->value_usd) ? (float) $item->value_usd : 0;
+        // 3. 重新整理分组逻辑
+        $formatted = $assets->groupBy('source_name')->map(function ($sourceAssets, $sourceName) use ($trackedTokens) {
+            $sourceVal = $sourceAssets->sum(function ($a) {
+                return (float) ($a->value_usd ?? $a->balance_usd ?? 0);
             });
 
-            $sourceNode = [
-                'name' => $sourceName,
-                'value' => round($sourceValue, 2),
-                'children' => []
-            ];
-
-            // 4. 按网络分组
-            $groupedByNetwork = $sourceAssets->groupBy('network');
-
-            foreach ($groupedByNetwork as $networkName => $networkAssets) {
-                $networkValue = $networkAssets->sum(function ($item) {
-                    return is_numeric($item->value_usd) ? (float) $item->value_usd : 0;
-                });
-
-                $networkNode = [
+            $networks = $sourceAssets->groupBy('network')->map(function ($networkAssets, $networkName) use ($trackedTokens) {
+                return [
                     'name' => $networkName,
-                    'value' => round($networkValue, 2),
-                    'children' => []
+                    'children' => $networkAssets->map(function ($asset) use ($trackedTokens) {
+                        $tokenInfo = $trackedTokens->get($asset->coingecko_id);
+                        $officialSymbol = $tokenInfo->symbol ?? $asset->token_name;
+                        $val = $asset->value_usd ?? $asset->balance_usd ?? 0;
+                        return [
+                            'id' => (string) ($asset->_id ?? $asset->id),
+                            'symbol' => strtoupper($officialSymbol),
+                            'amount' => (float) $asset->token_amount,
+                            'value' => round((float) $val, 2)
+                        ];
+                    })->values()
                 ];
+            })->values();
 
-                // 在 getThinkingMap 的 foreach ($networkAssets as $asset) 循环内
-                foreach ($networkAssets as $asset) {
-                    $tokenInfo = $trackedTokens->get($asset->coingecko_id);
+            return [
+                'name' => $sourceName,
+                'value' => round($sourceVal, 2),
+                'children' => $networks
+            ];
+        })->values();
 
-                    // --- 逻辑修复：优先从官方信息里拿 symbol，没有才用表里的名字 ---
-                    $officialSymbol = isset($tokenInfo->symbol) ? strtoupper($tokenInfo->symbol) : strtoupper($asset->token_name);
-                    $officialFullName = $tokenInfo->name ?? $asset->token_name;
-
-                    $networkNode['children'][] = [
-                        '_id' => (string) ($asset->_id ?? $asset->id),
-                        'symbol' => $officialSymbol, // 👈 变成真正的简称 (如 USDT)
-                        'full_name' => $officialFullName,
-                        'amount' => (float) $asset->token_amount,
-                        'value' => round((float) $asset->value_usd, 2)
-                    ];
-                }
-                $sourceNode['children'][] = $networkNode;
-            }
-            $tree['children'][] = $sourceNode;
-        }
-
+        $tree['children'] = $formatted;
         return response()->json($tree);
     }
 
     /**
-     * 获取历史快照数据 (1D/7D/30D 降采样逻辑)
+     * 获取快照数据
      */
     public function getSnapshots(Request $request)
-    {
-        $range = $request->query('range', '1D');
-        $query = DB::table('asset_snapshots')->orderBy('snapshot_time', 'asc');
+{
+    $range = $request->query('range', '1D');
+    $query = DB::table('asset_snapshots');
 
-        if ($range === '1D') {
-            $query->where('snapshot_time', '>=', now()->subDay());
-        } elseif ($range === '7D') {
-            $query->where('snapshot_time', '>=', now()->subDays(7))
-                ->where('snapshot_time', 'like', '%:00:%');
-        } elseif ($range === '30D') {
-            $query->where('snapshot_time', '>=', now()->subDays(30))
-                ->where('snapshot_time', 'like', '% 00:00:%');
-        }
-
-        $snapshots = $query->get();
-
-        $times = [];
-        $values = [];
-        foreach ($snapshots as $snap) {
-            $times[] = $snap->snapshot_time;
-            $values[] = round((float) $snap->total_value_usd, 2);
-        }
-
-        return response()->json(['times' => $times, 'values' => $values]);
+    // 根据范围筛选（保持直接使用 Carbon 对象以适配 MongoDB）
+    if ($range === '1D') {
+        $query->where('snapshot_time', '>=', now()->subDay()); 
+    } elseif ($range === '7D') {
+        $query->where('snapshot_time', '>=', now()->subDays(7));
+    } elseif ($range === '30D') {
+        $query->where('snapshot_time', '>=', now()->subDays(30));
     }
 
-    public function store(Request $request)
+    $snapshots = $query->orderBy('snapshot_time', 'asc')->get();
+
+    $times = [];
+    $values = [];
+
+    foreach ($snapshots as $snap) {
+        $rawTime = $snap->snapshot_time;
+        $carbonTime = null;
+
+        // 🎯 1. 将 MongoDB 的各种时间格式统一转为 Carbon 对象
+        if ($rawTime instanceof \MongoDB\BSON\UTCDateTime) {
+            $carbonTime = \Carbon\Carbon::createFromTimestampMs($rawTime->__toString());
+        } elseif (is_object($rawTime) && isset($rawTime->toDateTime)) {
+            $carbonTime = \Carbon\Carbon::instance($rawTime->toDateTime());
+        } else {
+            $carbonTime = \Carbon\Carbon::parse($rawTime);
+        }
+
+        // 🎯 2. 核心修复：强制转换为马来西亚时间 (UTC+8)
+        // 这样返回给前端的字符串就是真实的本地时间了
+        $localTime = $carbonTime->setTimezone('Asia/Kuala_Lumpur')->format('Y-m-d H:i:s');
+
+        $times[] = $localTime;
+        $values[] = round((float)($snap->total_value_usd ?? 0), 2);
+    }
+
+    return response()->json([
+        'times' => $times,
+        'values' => $values,
+        'count' => count($times)
+    ]);
+}
+
+    /**
+     * 手动同步指令
+     */
+    public function manualSync()
+    {
+        try {
+            Artisan::call('app:sync-crypto-data');
+            return response()->json([
+                'status' => 'success',
+                'message' => '同步指令已发出',
+                'last_sync' => Cache::get('last_sync_at')
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * 获取同步状态
+     */
+    public function getSyncStatus()
+    {
+        return response()->json([
+            'status' => Cache::get('sync_status', 'idle'),
+            'last_sync' => Cache::get('last_sync_at', '从未同步'),
+        ]);
+    }
+
+    /**
+     * 录入资产
+     */
+    public function storeAsset(Request $request)
     {
         $validated = $request->validate([
             'source_name' => 'required|string|max:50',
@@ -134,86 +168,92 @@ class AssetController extends Controller
             'created_at' => now()
         ]);
 
-        try {
-            Artisan::call('app:sync-crypto-data');
-        } catch (\Exception $e) {
-        }
-
-        return response()->json(['status' => 'success', 'message' => '资产已同步！']);
-    }
-
-    public function sync()
-    {
-        try {
-            // 运行我们写好的对齐命令
-            Artisan::call('app:sync-crypto-data');
-
-            // 获取最新的状态返回给前端
-            return response()->json([
-                'status' => 'success',
-                'message' => '同步指令已发出',
-                'last_sync' => Cache::get('last_sync_at')
-            ]);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
-        }
-    }
-
-    public function destroy($id)
-    {
-        try {
-            $deleted = DB::table('assets')->where('_id', $id)->delete();
-            if ($deleted === 0) {
-                $deleted = DB::table('assets')->where('id', $id)->delete();
-            }
-            return response()->json(['status' => 'success']);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'error'], 500);
-        }
+        Artisan::call('app:sync-crypto-data');
+        return response()->json(['status' => 'success']);
     }
 
     /**
-     * 添加新追踪代币：自动从 CoinGecko 抓取官方名称和简称
+     * 更新资产
      */
-    public function addTrackedToken(Request $request)
+    public function updateAsset(Request $request, $id)
     {
-        $id = strtolower($request->coingecko_id);
-        try {
-            $response = Http::get("https://api.coingecko.com/api/v3/coins/{$id}");
-            if ($response->successful()) {
-                $data = $response->json();
+        $validated = $request->validate([
+            'token_amount' => 'required|numeric|min:0',
+            'network' => 'required|string',
+            'source_name' => 'required|string'
+        ]);
 
-                DB::table('tracked_tokens')->updateOrInsert(
-                    ['coingecko_id' => $id],
-                    [
-                        'name' => $data['name'],
-                        'symbol' => $data['symbol'], // 👈 存入简称 (如 usdt)
-                        'last_price' => 0,
-                        'updated_at' => now()
-                    ]
-                );
+        $data = [
+            'token_amount' => (float) $validated['token_amount'],
+            'network' => strtoupper($validated['network']),
+            'source_name' => $validated['source_name'],
+            'updated_at' => now()
+        ];
 
-                // 顺便修正一下 assets 表里现有的错误名称
-                DB::table('assets')->where('coingecko_id', $id)->update([
-                    'token_name' => strtoupper($data['symbol'])
-                ]);
-
-                Artisan::call('app:sync-crypto-data');
-                return response()->json(['status' => 'success']);
-            }
-            return response()->json(['status' => 'error', 'message' => 'ID无效'], 404);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        $updated = DB::table('assets')->where('_id', $id)->update($data);
+        if ($updated === 0) {
+            $updated = DB::table('assets')->where('id', $id)->update($data);
         }
+
+        return response()->json(['status' => 'success']);
     }
+
+    /**
+     * 删除资产
+     */
+    public function deleteAsset($id)
+    {
+        DB::table('assets')->where('_id', $id)->delete();
+        DB::table('assets')->where('id', $id)->delete();
+        return response()->json(['status' => 'success']);
+    }
+
+    /**
+     * 钱包管理
+     */
+    public function getWallets()
+    {
+        return response()->json(DB::table('wallets')->get()->map(function ($i) {
+            $i->id = (string) ($i->_id ?? $i->id);
+            return $i;
+        }));
+    }
+
+    public function storeWallet(Request $request)
+    {
+        $v = $request->validate(['name' => 'required', 'type' => 'required']);
+        DB::table('wallets')->insert(['name' => $v['name'], 'type' => $v['type'], 'created_at' => now()]);
+        return response()->json(['status' => 'success']);
+    }
+
+    public function deleteWallet($id)
+    {
+        DB::table('wallets')->where('_id', $id)->delete();
+        DB::table('wallets')->where('id', $id)->delete();
+        return response()->json(['status' => 'success']);
+    }
+
+    /**
+     * 追踪代币管理
+     */
     public function getTrackedTokens()
     {
-        return response()->json(
-            DB::table('tracked_tokens')->get()->map(function ($item) {
-                $item->id = (string) ($item->_id ?? $item->id ?? '');
-                return $item;
-            })
-        );
+        return response()->json(DB::table('tracked_tokens')->get()->map(function ($i) {
+            $i->id = (string) ($i->_id ?? $i->id);
+            return $i;
+        }));
+    }
+
+    public function storeTrackedToken(Request $request)
+    {
+        $id = strtolower($request->coingecko_id);
+        $res = Http::get("https://api.coingecko.com/api/v3/coins/{$id}");
+        if ($res->successful()) {
+            $data = $res->json();
+            DB::table('tracked_tokens')->updateOrInsert(['coingecko_id' => $id], ['name' => $data['name'], 'symbol' => $data['symbol'], 'updated_at' => now()]);
+            return response()->json(['status' => 'success']);
+        }
+        return response()->json(['status' => 'error'], 404);
     }
 
     public function deleteTrackedToken($id)
@@ -222,36 +262,15 @@ class AssetController extends Controller
         return response()->json(['status' => 'success']);
     }
 
-    public function getWallets()
-    {
-        return response()->json(
-            DB::table('wallets')->get()->map(function ($item) {
-                $item->id = (string) ($item->_id ?? $item->id ?? '');
-                return $item;
-            })
-        );
-    }
-
-    public function deleteWallet($id)
-    {
-        DB::table('wallets')->where('_id', $id)->delete();
-        return response()->json(['status' => 'success']);
-    }
-
     public function getExchangeRate()
     {
         $rate = Cache::remember('usd_myr_rate', 3600, function () {
-            try {
-                $response = Http::get("https://api.frankfurter.app/latest?from=USD&to=MYR");
-                return $response->successful() ? (float) $response->json()['rates']['MYR'] : 3.94;
-            } catch (\Exception $e) {
-                return 3.94;
-            }
+            $res = Http::get("https://api.frankfurter.app/latest?from=USD&to=MYR");
+            return $res->successful() ? (float) $res->json()['rates']['MYR'] : 4.72;
         });
         return response()->json(['rate' => $rate]);
     }
 
-    // 危险区域
     public function clearSnapshots()
     {
         DB::table('asset_snapshots')->delete();
@@ -270,70 +289,4 @@ class AssetController extends Controller
         DB::table('tracked_tokens')->delete();
         return response()->json(['status' => 'success']);
     }
-    public function update(Request $request, $id)
-    {
-        // 1. 验证数据
-        $validated = $request->validate([
-            'token_amount' => 'required|numeric|min:0',
-            'network' => 'required|string',
-            'source_name' => 'required|string'
-        ]);
-
-        try {
-            $data = [
-                'token_amount' => (float) $validated['token_amount'],
-                'network' => strtoupper($validated['network']),
-                'source_name' => $validated['source_name'],
-                'updated_at' => now()
-            ];
-
-            // 2. 尝试更新。在 CosmosDB/Mongo 中，我们需要同时兼容 _id 和 id
-            // 先尝试用字符串形式更新
-            $updated = DB::table('assets')->where('_id', $id)->update($data);
-
-            if ($updated === 0) {
-                // 如果更新失败，尝试匹配普通的 id 字段
-                $updated = DB::table('assets')->where('id', $id)->update($data);
-            }
-
-            return response()->json(['status' => 'success', 'updated_count' => $updated]);
-
-        } catch (\Exception $e) {
-            // 这里的错误会被记录在 storage/logs/laravel.log
-            return response()->json([
-                'status' => 'error',
-                'message' => '数据库更新失败: ' . $e->getMessage()
-            ], 500);
-        }
-    }
-    public function addWallet(Request $request)
-    {
-        $validated = $request->validate([
-            'name' => 'required|string|max:50',
-            'type' => 'required|string'
-        ]);
-
-        try {
-            DB::table('wallets')->insert([
-                'name' => $validated['name'],
-                'type' => $validated['type'],
-                'created_at' => now(),
-                'updated_at' => now()
-            ]);
-            return response()->json(['status' => 'success']);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
-        }
-    }
-    /**
- * 1. 获取同步状态 (供前端指示灯使用)
- */
-public function getSyncStatus()
-{
-    return response()->json([
-        'status' => Cache::get('sync_status', 'idle'), // idle, running, success, error
-        'last_sync' => Cache::get('last_sync_at', '从未同步'),
-    ]);
-}
-
 }

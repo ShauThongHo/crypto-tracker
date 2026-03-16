@@ -1177,7 +1177,9 @@
                 alert("❌ 网络错误或接口未连通");
             }
         }
-        function updateSyncBadge() {
+
+        let lastKnownSync = null;
+        function updateSyncBadgeAndCheckUpdate() {
             fetch('/api/sync-status')
                 .then(res => res.json())
                 .then(data => {
@@ -1196,12 +1198,18 @@
                         badge.innerHTML = `● SYNC ALIGNED (${timeStr})`;
                         badge.className = "text-emerald-400 bg-emerald-400/10 px-3 py-1 rounded-full flex items-center";
                     }
+
+                    if (lastKnownSync && data.last_sync !== lastKnownSync && data.status === 'success') {
+                        console.log("检测到新数据，正在更新图表...");
+                        refreshMyChart(); // 你的图表刷新函数
+                    }
+                    lastKnownSync = data.last_sync;
                 });
         }
 
         // 页面加载和每 5 秒跑一次
-        updateSyncBadge();
-        setInterval(updateSyncBadge, 5000);
+        updateSyncBadgeAndCheckUpdate();
+        setInterval(updateSyncBadgeAndCheckUpdate, 5000);
     </script>
 </body>
 

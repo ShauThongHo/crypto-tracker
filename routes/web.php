@@ -1,33 +1,90 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Models\Asset; // 引入刚才建好的模型 (Import the model we just built)
-use App\Http\Controllers\AssetSyncController;
 use App\Http\Controllers\AssetController;
 use Illuminate\Support\Facades\Artisan;
 
+/*
+|--------------------------------------------------------------------------
+| 1. 页面跳转路由 (View Routes)
+|--------------------------------------------------------------------------
+| 对应你拆分出的三个 .blade.php 文件
+*/
 
-// 访问这个网址就会触发自动更新
-Route::get('/sync', [AssetSyncController::class, 'syncPrices']);
-
+// 资产总览首页 (原 map.blade.php 现在叫 index.blade.php)
 Route::get('/', function () {
-    return view('map'); // 这里指向 resources/views/map.blade.php
+    return view('index');
+})->name('portfolio');
+
+// 盈亏历史页面
+Route::get('/history', function () {
+    return view('history');
+})->name('history');
+
+// 系统设置页面
+Route::get('/settings', function () {
+    return view('settings');
+})->name('settings');
+
+
+/*
+|--------------------------------------------------------------------------
+| 2. 后端 API 路由 (Backend API Routes)
+|--------------------------------------------------------------------------
+| 供你的 dashboard.js 通过 fetch() 调用
+*/
+
+Route::prefix('api')->group(function () {
+    Route::get('/assets/thinking-map', [AssetController::class, 'getAssetThinkingMap']);
+    Route::get('/assets/snapshots', [AssetController::class, 'getSnapshots']);
+    Route::get('/sync-status', [AssetController::class, 'getSyncStatus']);
+    Route::get('/exchange-rate', [AssetController::class, 'getExchangeRate']);
+    
+    Route::post('/assets/sync', [AssetController::class, 'manualSync']);
+    Route::post('/assets', [AssetController::class, 'storeAsset']);
+    Route::put('/assets/{id}', [AssetController::class, 'updateAsset']);
+    Route::delete('/assets/{id}', [AssetController::class, 'deleteAsset']);
+
+    Route::get('/wallets', [AssetController::class, 'getWallets']);
+    Route::post('/wallets', [AssetController::class, 'storeWallet']);
+    Route::delete('/wallets/{id}', [AssetController::class, 'deleteWallet']);
+
+    Route::get('/tracked-tokens', [AssetController::class, 'getTrackedTokens']);
+    Route::post('/tracked-tokens', [AssetController::class, 'storeTrackedToken']);
+    Route::delete('/tracked-tokens/{id}', [AssetController::class, 'deleteTrackedToken']);
+
+    // 危险区域
+    Route::delete('/danger/snapshots', [AssetController::class, 'clearSnapshots']);
+    Route::delete('/danger/assets', [AssetController::class, 'clearAssets']);
+    Route::delete('/danger/wipe', [AssetController::class, 'wipeEverything']);
 });
-// 2. 给 UptimeRobot 戳的保活+触发接口
+
+
+/*
+|--------------------------------------------------------------------------
+| 3. 特殊触发路由 (Automation Routes)
+|--------------------------------------------------------------------------
+*/
+
+// UptimeRobot 戳的保活+触发接口
 Route::get('/health-check', function () {
     try {
-        // 直接执行同步命令，确保 100% 触发逻辑
+        // 强制执行同步命令，解决 Render/UptimeRobot 的对齐问题
         Artisan::call('app:sync-crypto-data');
         $output = Artisan::output();
 
         return response()->json([
             'status' => 'alive',
             'time' => now()->toDateTimeString(),
-            'command_output' => $output // 可以在浏览器直接看到同步结果
+            'command_output' => $output 
         ]);
     } catch (\Exception $e) {
         return response()->json(['error' => $e->getMessage()], 500);
     }
 });
 
-Route::get('/api/sync-status', [AssetController::class, 'getSyncStatus']);
+// 保留原有的 sync 路由以防万一
+Route::get('/sync', function() {
+    Artisan::call('app:sync-crypto-data');
+    return "Sync Command Executed.";
+});

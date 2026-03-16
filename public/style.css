@@ -1,0 +1,96 @@
+/* --- 全局基础样式 --- */
+body {
+    background-color: #020617;
+    color: #f8fafc;
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow-x: hidden;
+}
+
+.nav-active {
+    background: rgba(56, 189, 248, 0.1);
+    color: #38bdf8;
+}
+
+.nav-inactive {
+    color: #94a3b8;
+}
+
+.nav-inactive:hover {
+    background: #0f172a;
+    color: #e2e8f0;
+}
+
+/* 📱 移动端底部导航样式 (蓝条在上方) */
+@media (max-width: 767px) {
+    .nav-active {
+        border-top: 2px solid #38bdf8;
+        border-radius: 0.5rem;
+    }
+
+    .nav-inactive {
+        border-top: 2px solid transparent;
+    }
+}
+
+/* 💻 桌面端侧边栏样式 (蓝条在右边) */
+@media (min-width: 768px) {
+    .nav-active {
+        border-right: 3px solid #38bdf8;
+    }
+
+    .nav-inactive {
+        border-right: 3px solid transparent;
+    }
+}
+
+/* --- 布局组件 --- */
+/* 核心 Bento 网格布局 */
+.bento-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr); /* 强制双列 */
+    gap: 1.5rem;
+    max-width: 1400px;
+}
+
+/* 铺满全行的渐变卡片 */
+.full-row-card {
+    grid-column: span 2;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%) !important;
+}
+
+@media (max-width: 768px) {
+    .bento-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .full-row-card {
+        grid-column: span 1 !important;
+    }
+}
+
+:root {
+    --safe-area-bottom: env(safe-area-inset-bottom);
+}
+
+.pb-safe {
+    padding-bottom: calc(5rem + var(--safe-area-bottom, 0px));
+}
+
+.bento-card {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 24px;
+    padding: 1.5rem;
+    min-height: 200px;
+    transition: all 0.3s ease;
+}
+
+.bento-card:hover {
+    border-color: #38bdf8;
+    transform: translateY(-2px);
+}
+
+/* 隐藏滚动条但保留功能 */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
