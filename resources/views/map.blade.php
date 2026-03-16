@@ -1177,6 +1177,31 @@
                 alert("❌ 网络错误或接口未连通");
             }
         }
+        function updateSyncBadge() {
+            fetch('/api/sync-status')
+                .then(res => res.json())
+                .then(data => {
+                    const badge = document.getElementById('sync-badge'); // 假设你的 HTML ID 是这个
+
+                    if (data.status === 'running') {
+                        badge.innerHTML = `<span class="animate-spin mr-2">◌</span> 同步中...`;
+                        badge.className = "text-sky-400 bg-sky-400/10 px-3 py-1 rounded-full flex items-center";
+                    } else if (data.status === 'error') {
+                        badge.innerHTML = `⚠ 同步失败`;
+                        badge.className = "text-rose-400 bg-rose-400/10 px-3 py-1 rounded-full flex items-center";
+                    } else {
+                        // data.last_sync 会显示类似 "2026-03-16 10:05:00"
+                        // 取出分钟部分显示即可
+                        const timeStr = data.last_sync.split(' ')[1] || '无';
+                        badge.innerHTML = `● SYNC ALIGNED (${timeStr})`;
+                        badge.className = "text-emerald-400 bg-emerald-400/10 px-3 py-1 rounded-full flex items-center";
+                    }
+                });
+        }
+
+        // 页面加载和每 5 秒跑一次
+        updateSyncBadge();
+        setInterval(updateSyncBadge, 5000);
     </script>
 </body>
 

@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Models\Asset; // 引入刚才建好的模型 (Import the model we just built)
 use App\Http\Controllers\AssetSyncController;
+use Illuminate\Support\Facades\Artisan;
 
 
 // 测试数据库连接的路由 (Route to test database connection)
@@ -34,8 +35,16 @@ Route::get('/sync', [AssetSyncController::class, 'syncPrices']);
 Route::get('/', function () {
     return view('map'); // 这里指向 resources/views/map.blade.php
 });
-// 专门给保活机器人访问的接口，不查数据库，极速响应
+// 2. 给 UptimeRobot 戳的保活+触发接口
 Route::get('/health-check', function () {
+    // 踢一下调度器（它会去跑 Kernel.php 里的任务）
     Artisan::call('schedule:run');
-    return response("System Healthy - Scheduler Poked", 200);
+    
+    return response()->json([
+        'status' => 'alive',
+        'time' => now()->toDateTimeString(),
+        'current_slot' => date('H:i:00', floor(time() / 300) * 300)
+    ]);
 });
+
+Route::get('/api/sync-status', [AssetController::class, 'getSyncStatus']);

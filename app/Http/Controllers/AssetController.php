@@ -145,8 +145,15 @@ class AssetController extends Controller
     public function sync()
     {
         try {
+            // 运行我们写好的对齐命令
             Artisan::call('app:sync-crypto-data');
-            return response()->json(['status' => 'success', 'message' => '同步完成！']);
+
+            // 获取最新的状态返回给前端
+            return response()->json([
+                'status' => 'success',
+                'message' => '同步指令已发出',
+                'last_sync' => Cache::get('last_sync_at')
+            ]);
         } catch (\Exception $e) {
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
@@ -318,4 +325,15 @@ class AssetController extends Controller
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
+    /**
+ * 1. 获取同步状态 (供前端指示灯使用)
+ */
+public function getSyncStatus()
+{
+    return response()->json([
+        'status' => Cache::get('sync_status', 'idle'), // idle, running, success, error
+        'last_sync' => Cache::get('last_sync_at', '从未同步'),
+    ]);
+}
+
 }

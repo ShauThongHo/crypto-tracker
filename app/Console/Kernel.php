@@ -10,11 +10,18 @@ class Kernel extends ConsoleKernel
     /**
      * Define the application's command schedule.
      */
+    /**
+     * Define the application's command schedule.
+     */
     protected function schedule(Schedule $schedule): void
     {
-        // 每 5 分钟执行一次你的同步指令
-        // 注意：'app:sync-crypto-data' 必须和你 Command 文件里的 $signature 一致
-        $schedule->command('app:sync-crypto-data')->everyFiveMinutes();
+        // 🎯 关键修改：改成 everyMinute()
+        // 别担心会频繁抓取 API，因为 SyncCryptoData 内部有缓存锁，5分钟只会真正跑一次。
+        // 这样改是为了确保 UptimeRobot 无论几点几分戳进来，任务都能被触发。
+        $schedule->command('app:sync-crypto-data')->everyMinute();
+
+        // 如果你以后有汇率同步，可以加在这里
+        // $schedule->command('app:sync-exchange-rates')->daily();
     }
 
     /**
