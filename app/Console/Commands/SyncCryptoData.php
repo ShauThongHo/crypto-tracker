@@ -94,8 +94,11 @@ class SyncCryptoData extends Command
                 Cache::put('last_sync_at', $alignedTime->toDateTimeString(), 3600);
 
                 $this->info("✅ 槽位 {$alignedTime->format('H:i:s')} 同步成功！");
+
             } else {
-                throw new \Exception("API Request Failed");
+                // 🎯 修改这一行，把具体的状态码打出来
+                $status = $response->status();
+                throw new \Exception("API 请求失败 (状态码: $status)");
             }
         } catch (\Exception $e) {
             Cache::put('sync_status', 'error', 3600);
