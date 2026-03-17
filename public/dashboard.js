@@ -621,3 +621,62 @@ window.selectTrackedToken = (id, name) => {
     document.getElementById('search_tracked_input').value = name;
     document.getElementById('tracked_search_results').classList.add('hidden');
 };
+
+// --- 补全：提交新增追踪代币 ---
+window.submitTrackedToken = async () => {
+    const id = document.getElementById('newTokenId').value;
+    const name = document.getElementById('search_tracked_input').value;
+
+    if (!id) {
+        return alert("请先通过搜索框选择一个代币");
+    }
+
+    try {
+        const res = await fetch('/api/tracked-tokens', {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json', 
+                'X-CSRF-TOKEN': getCsrfToken() 
+            },
+            body: JSON.stringify({ 
+                coingecko_id: id, 
+                name: name 
+            })
+        });
+
+        if (res.ok) {
+            console.log("✅ 成功添加追踪代币");
+            // 清空输入框
+            document.getElementById('newTokenId').value = '';
+            document.getElementById('search_tracked_input').value = '';
+            // 刷新列表
+            loadTrackedTokens();
+        } else {
+            const err = await res.json();
+            alert("❌ 添加失败: " + (err.message || "该代币可能已在追踪列表中"));
+        }
+    } catch (e) {
+        console.error("提交追踪代币出错:", e);
+    }
+};
+
+// --- 补全：删除/停止追踪代币 ---
+window.deleteTrackedToken = async (id) => {
+    if (!confirm('确定要停止追踪此代币吗？(相关的资产数据可能会受影响)')) return;
+
+    try {
+        const res = await fetch(`/api/tracked-tokens/${id}`, {
+            method: 'DELETE',
+            headers: { 
+                'X-CSRF-TOKEN': getCsrfToken() 
+            }
+        });
+
+        if (res.ok) {
+            console.log("🗑️ 已停止追踪");
+            loadTrackedTokens();
+        }
+    } catch (e) {
+        console.error("删除追踪代币出错:", e);
+    }
+};
