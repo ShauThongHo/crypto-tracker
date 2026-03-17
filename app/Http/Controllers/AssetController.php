@@ -244,7 +244,7 @@ class AssetController extends Controller
         }));
     }
 
-    public function storeTrackedToken(Request $request)
+    public function addTrackedToken(Request $request)
     {
         $id = strtolower($request->coingecko_id);
         $res = Http::get("https://api.coingecko.com/api/v3/coins/{$id}");
