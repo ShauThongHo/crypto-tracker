@@ -71,9 +71,27 @@ class AssetController extends Controller
      */
     public function getPortfolioStats()
     {
-        // 改为累加法币金额 fiat_amount
-        $totalDeposit = DB::table('capital_flows')->where('type', 'DEPOSIT')->sum('fiat_amount');
-        $totalWithdraw = DB::table('capital_flows')->where('type', 'WITHDRAWAL')->sum('fiat_amount');
+        // 🎯 核心修复：手动遍历计算总数（MongoDB sum() 可能不工作）
+        $deposits = CapitalFlow::where('type', 'DEPOSIT')->get();
+        $withdrawals = CapitalFlow::where('type', 'WITHDRAWAL')->get();
+
+        // 手动累加，并确保转换为浮点数
+        $totalDeposit = $deposits->sum(function($item) {
+            return (float) ($item->fiat_amount ?? 0);
+        });
+
+        $totalWithdraw = $withdrawals->sum(function($item) {
+            return (float) ($item->fiat_amount ?? 0);
+        });
+
+        \Log::info('✅ Portfolio Stats 计算完成', [
+            'deposits_count' => $deposits->count(),
+            'withdrawals_count' => $withdrawals->count(),
+            'total_deposited' => $totalDeposit,
+            'total_withdrawn' => $totalWithdraw,
+            'net_invested' => $totalDeposit - $totalWithdraw,
+            'sample_deposit' => $deposits->first() ? $deposits->first()->toArray() : null,
+        ]);
 
         return response()->json([
             'total_deposited' => (float) $totalDeposit,
@@ -95,8 +113,8 @@ class AssetController extends Controller
 
         $snapshots = $query->where('snapshot_time', '>=', $since)->orderBy('snapshot_time', 'asc')->get();
 
-        // 获取所有的出入金流水，用来计算每个时间点的累计本金
-        $flows = DB::table('capital_flows')->orderBy('transaction_date', 'asc')->get();
+        // 🎯 核心修复：使用 CapitalFlow 模型查询 MongoDB 中的流水数据，而不是空的 SQL 表
+        $flows = CapitalFlow::orderBy('transaction_date', 'asc')->get();
 
         $times = [];
         $values = [];
@@ -111,7 +129,8 @@ class AssetController extends Controller
             $netInvestedAtPoint = $flows->filter(function ($f) use ($carbonTime) {
                 return Carbon::parse($f->transaction_date)->endOfDay() <= $carbonTime->endOfDay();
             })->sum(function ($f) {
-                return $f->type === 'DEPOSIT' ? $f->fiat_amount : -$f->fiat_amount;
+                $amount = (float) ($f->fiat_amount ?? 0);
+                return $f->type === 'DEPOSIT' ? $amount : -$amount;
             });
 
             $invested[] = round((float) $netInvestedAtPoint, 2);

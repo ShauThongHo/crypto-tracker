@@ -2,6 +2,7 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
 // 1. 记得引入你刚创建的 Controller
 use App\Http\Controllers\AssetController;
 

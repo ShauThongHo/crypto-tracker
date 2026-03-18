@@ -9,6 +9,7 @@ let isMYR = localStorage.getItem('preferred_currency') === 'MYR';
 let MYR_RATE = 4.2;
 let globalPortfolioData = null;
 let globalSnapshotData = null;
+let globalStats = null;
 let myChart = null;
 let historyCalendarChart = null;
 let historyMonthChart = null;
@@ -324,15 +325,22 @@ async function loadAllData() {
             fetch('/api/portfolio-stats').then(r => r.json())
         ]);
 
+        console.log('📊 API 数据加载成功:', { mapRes, snapRes, statRes });
+
         globalPortfolioData = mapRes;
         globalSnapshotData = snapRes;
+        globalStats = statRes;
 
         renderPortfolio(globalPortfolioData);
         renderChart(globalSnapshotData);
 
         // 🎯 计算并显示 ROI
-        calculateROI(globalPortfolioData.value, statRes);
-    } catch (e) { console.error("数据加载失败", e); }
+        calculateROI(globalPortfolioData.value, globalStats);
+    } catch (e) { 
+        console.error("💥 数据加载失败:", e);
+        console.error("🔍 请检查浏览器 Network 标签，看各 API 返回的数据");
+        // 不弹出 alert，让用户自己查看控制台
+    }
 }
 
 // 🎯 新增的算 ROI 的函数
@@ -341,20 +349,39 @@ function calculateROI(currentValueUSD, stats) {
     const badge = document.getElementById('roi-badge');
     const valueElem = document.getElementById('roi-value');
 
-    if (!badge) return;
+    console.log("📊 ROI 计算调试:", { currentValueUSD, net_invested, isMYR, MYR_RATE });
+
+    if (!badge) {
+        console.warn("⚠️ ROI badge 元素未找到");
+        return;
+    }
 
     // 如果还没入金，隐藏 ROI
-    if (net_invested <= 0) {
+    if (!net_invested || net_invested <= 0) {
+        console.log("ℹ️ 净投入为 0 或负数，隐藏 ROI badge");
         badge.classList.add('hidden');
         return;
     }
 
-    // 注意：net_invested 是以 MYR 计价的，因此在 USD 模式下要先换算回 USD
-    const netInvestedUSD = isMYR ? net_invested : net_invested / MYR_RATE;
+    // 🎯 核心修复：统一币种后再计算
+    let currentValueInInvestedCurrency;
+    let netInvestedInSameCurrency;
 
-    // 利润 = 当前总资产 - 净本金
-    const profit = currentValueUSD - netInvestedUSD;
-    const roi = (profit / netInvestedUSD) * 100;
+    if (isMYR) {
+        // 当显示 MYR 时：把资产(USD) 转回 MYR，对标本金(MYR)
+        currentValueInInvestedCurrency = currentValueUSD * MYR_RATE;  // 转成 MYR
+        netInvestedInSameCurrency = net_invested;  // 本金已经是 MYR
+    } else {
+        // 当显示 USD 时：把本金(MYR) 转成 USD，对标资产(USD)
+        currentValueInInvestedCurrency = currentValueUSD;  // 资产已经是 USD
+        netInvestedInSameCurrency = net_invested / MYR_RATE;  // 本金转成 USD
+    }
+
+    // 利润 = 当前总资产 - 净本金（两者币种统一）
+    const profit = currentValueInInvestedCurrency - netInvestedInSameCurrency;
+    const roi = (profit / netInvestedInSameCurrency) * 100;
+
+    console.log("✅ ROI 计算成功:", { currentValueInInvestedCurrency, netInvestedInSameCurrency, profit, roi: roi.toFixed(2) + '%' });
 
     valueElem.innerText = `${roi > 0 ? '+' : ''}${roi.toFixed(2)}%`;
     badge.classList.remove('hidden', 'bg-emerald-500/20', 'text-emerald-500', 'bg-rose-500/20', 'text-rose-500');
@@ -738,6 +765,11 @@ function refreshMyChart() {
     // 刷新盈亏历史页的两个日历
     if (document.getElementById('calendar-echarts-container') && globalSnapshotData) {
         renderCalendarHistory(globalSnapshotData);
+    }
+
+    // 🎯 核心修复：切换货币时重新计算 ROI
+    if (globalStats && globalPortfolioData) {
+        calculateROI(globalPortfolioData.value, globalStats);
     }
 }
 
