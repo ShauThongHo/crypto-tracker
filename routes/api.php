@@ -50,3 +50,14 @@ Route::delete('/danger/snapshots', [AssetController::class, 'clearSnapshots']);
 Route::delete('/danger/assets', [AssetController::class, 'clearAssets']);
 Route::delete('/danger/wallets', [AssetController::class, 'clearWallets']);
 Route::delete('/danger/wipe', [AssetController::class, 'wipeEverything']);
+
+// 获取资金流水历史
+Route::get('/capital/history', [AssetController::class, 'getCapitalHistory']);
+
+// 提交入金/出金记录
+Route::post('/capital/record', [AssetController::class, 'storeCapitalRecord']);
+
+Route::delete('/capital/clear', [AssetController::class, 'clearCapitalFlows']);
+Route::delete('/capital/{id}', [AssetController::class, 'deleteCapitalRecord']);
+
+Route::get('/portfolio-stats', [AssetController::class, 'getPortfolioStats']);

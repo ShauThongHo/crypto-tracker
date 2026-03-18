@@ -50,7 +50,7 @@ Route::prefix('api')->group(function () {
     Route::delete('/wallets/{id}', [AssetController::class, 'deleteWallet']);
 
     Route::get('/tracked-tokens', [AssetController::class, 'getTrackedTokens']);
-    Route::post('/tracked-tokens', [AssetController::class, 'storeTrackedToken']);
+    Route::post('/tracked-tokens', [AssetController::class, 'addTrackedToken']);
     Route::delete('/tracked-tokens/{id}', [AssetController::class, 'deleteTrackedToken']);
 
     // 危险区域
@@ -88,3 +88,5 @@ Route::get('/sync', function() {
     Artisan::call('app:sync-crypto-data');
     return "Sync Command Executed.";
 });
+
+Route::view('/capital', 'capital');

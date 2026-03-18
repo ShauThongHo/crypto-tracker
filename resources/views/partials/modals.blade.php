@@ -1,76 +1,82 @@
-<div id="addAssetModal"
-    class="fixed inset-0 z-50 hidden flex items-center justify-center backdrop-blur-sm bg-black/60 transition-opacity duration-300 opacity-0">
-    <div id="modalContent"
-        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl transform scale-95 transition-all duration-300 overflow-hidden">
-        <div class="flex border-b border-slate-800">
-            <button class="flex-1 py-4 text-sm font-bold border-b-2 border-sky-500 text-sky-500">✍️ 录入资产</button>
-            <div class="flex-1 py-4 text-sm font-bold text-slate-600 text-center cursor-not-allowed">API 同步 (待开发)</div>
-        </div>
-        <form onsubmit="submitNewAsset(event)" class="p-6 space-y-5">
+<div id="addAssetModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl">
+        <form id="addAssetForm" onsubmit="submitNewAsset(event)" class="p-6 space-y-4">
+            <h3 class="text-xl font-bold text-white mb-4">录入新资产</h3>
+            
+            <div class="relative">
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">钱包 / 来源</label>
+                <input type="text" id="add_source_name" oninput="searchSource(this.value)" autocomplete="off" 
+                       class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white focus:border-sky-500 outline-none transition-all" 
+                       placeholder="搜索或输入来源 (如 Binance)">
+                <div id="source_suggestions" class="absolute z-50 w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl hidden max-h-40 overflow-y-auto shadow-2xl"></div>
+            </div>
+
+            <div class="relative">
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">代币币种</label>
+                <input type="text" id="add_token_search" oninput="searchToken(this.value)" autocomplete="off" 
+                       class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white focus:border-sky-500 outline-none transition-all" 
+                       placeholder="搜索代币 (如 CRO, BTC)">
+                <input type="hidden" id="add_coingecko_id"> <input type="hidden" id="add_token_name">   <div id="token_suggestions" class="absolute z-50 w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl hidden max-h-40 overflow-y-auto shadow-2xl"></div>
+            </div>
+
             <div class="grid grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">资产来源</label>
-                    <select id="asset_source_dropdown" name="source_name"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white outline-none"></select>
+                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">持有数量</label>
+                    <input type="number" id="add_token_amount" step="any" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
                 </div>
                 <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">所在网络</label>
-                    <input type="text" name="network" placeholder="如: SOL"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white uppercase outline-none focus:border-sky-500">
+                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">网络 (Chain)</label>
+                    <input type="text" id="add_network" oninput="this.value = this.value.toUpperCase()" placeholder="如: BSC" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
                 </div>
             </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">选择代币</label>
-                    <select id="asset_token_dropdown" name="token_name" onchange="updateHiddenId(this)"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white outline-none focus:border-sky-500"></select>
-                    <input type="hidden" id="hidden_coingecko_id" name="coingecko_id">
-                </div>
-                <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">持有数量</label>
-                    <input type="number" step="any" name="token_amount" placeholder="0.00"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white outline-none focus:border-sky-500">
-                </div>
+
+            <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">备注 (Label)</label>
+                <input type="text" id="add_label" placeholder="如: Staked" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
             </div>
-            <div class="flex justify-end gap-3 pt-4">
-                <button type="button" onclick="closeAddModal()"
-                    class="text-slate-400 text-sm font-bold px-4">取消</button>
-                <button type="submit"
-                    class="bg-sky-500 text-white px-8 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-sky-500/20">保存到看板</button>
+
+            <div class="flex gap-3 mt-6">
+                <button type="button" onclick="closeAddModal()" class="flex-1 px-4 py-3 rounded-xl bg-slate-800 text-white font-bold">取消</button>
+                <button type="submit" class="flex-[2] px-4 py-3 rounded-xl bg-sky-500 text-white font-bold shadow-lg shadow-sky-500/20">确认添加</button>
             </div>
         </form>
     </div>
 </div>
 
-<div id="editAssetModal"
-    class="fixed inset-0 z-50 hidden flex items-center justify-center backdrop-blur-sm bg-black/60 transition-opacity duration-300 opacity-0">
-    <div id="editModalContent"
-        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl transform scale-95 transition-all duration-300 overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
-            <h3 class="text-sm font-bold text-white uppercase tracking-widest">📝 编辑资产信息</h3>
-            <span id="edit-token-label"
-                class="text-[10px] bg-sky-500/10 text-sky-400 px-2 py-1 rounded-md font-mono"></span>
-        </div>
-        <form onsubmit="submitEditAsset(event)" class="p-6 space-y-5">
-            <input type="hidden" id="edit_asset_id"><input type="hidden" id="edit_source_name">
+<div id="editAssetModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl">
+        <form id="editAssetForm" onsubmit="submitEditAsset(event)" class="p-6 space-y-4">
+            <h3 class="text-xl font-bold text-white mb-4">编辑资产 <span id="edit-token-label" class="text-[10px] bg-sky-500/10 text-sky-400 px-2 py-1 rounded-md font-mono"></span></h3>
+            
+            <input type="hidden" id="edit_asset_id">
+            
+            <div class="relative">
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">钱包 / 来源</label>
+                <input type="text" id="edit_source_name" 
+                       class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white focus:border-sky-500 outline-none transition-all" 
+                       placeholder="来源">
+            </div>
+
             <div class="grid grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">修改网络 (Chain)</label>
-                    <input type="text" id="edit_network" name="network"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white uppercase outline-none focus:border-sky-500">
+                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">持有数量</label>
+                    <input type="number" id="edit_token_amount" step="any" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
                 </div>
                 <div>
-                    <label class="block text-slate-400 text-[10px] font-bold mb-1 uppercase">修改持有数量</label>
-                    <input type="number" step="any" id="edit_token_amount" name="token_amount"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white outline-none focus:border-sky-500">
+                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">网络 (Chain)</label>
+                    <input type="text" id="edit_network" oninput="this.value = this.value.toUpperCase()" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
                 </div>
             </div>
-            <div class="flex justify-end gap-3 pt-4">
-                <button type="button" onclick="closeEditModal()"
-                    class="text-slate-400 text-sm font-bold px-4">取消</button>
-                <button type="submit"
-                    class="bg-sky-500 text-white px-8 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-sky-500/20">更新数据</button>
+
+            <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">备注 (Label)</label>
+                <input type="text" id="edit_label" placeholder="如: Staked" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
+            </div>
+
+            <div class="flex gap-3 mt-6">
+                <button type="button" onclick="closeEditModal()" class="flex-1 px-4 py-3 rounded-xl bg-slate-800 text-white font-bold">取消</button>
+                <button type="submit" class="flex-[2] px-4 py-3 rounded-xl bg-sky-500 text-white font-bold shadow-lg shadow-sky-500/20">更新</button>
             </div>
         </form>
     </div>
-</div>
+</div>  

@@ -103,21 +103,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // --- 弹窗控制 ---
 window.openAddModal = async function () {
-    try {
-        const [wallets, tokens] = await Promise.all([
-            fetch('/api/wallets').then(res => res.json()),
-            fetch('/api/tracked-tokens').then(res => res.json())
-        ]);
-        const s_drop = document.getElementById('asset_source_dropdown');
-        const t_drop = document.getElementById('asset_token_dropdown');
-        if (s_drop) s_drop.innerHTML = wallets.map(w => `<option value="${w.name}">${w.name}</option>`).join('') || '<option value="">无钱包</option>';
-        if (t_drop) t_drop.innerHTML = tokens.map(t => `<option value="${t.name}" data-id="${t.coingecko_id}">${t.name}</option>`).join('') || '<option value="">无追踪</option>';
-
-        window.updateHiddenId(t_drop);
-        const modal = document.getElementById('addAssetModal');
-        modal.classList.remove('hidden');
-        setTimeout(() => modal.classList.add('opacity-100'), 10);
-    } catch (e) { console.error("加载弹窗失败", e); }
+    const modal = document.getElementById('addAssetModal');
+    modal.classList.remove('hidden');
+    setTimeout(() => modal.classList.add('opacity-100'), 10);
 };
 
 window.closeAddModal = () => {
@@ -126,11 +114,12 @@ window.closeAddModal = () => {
     setTimeout(() => modal.classList.add('hidden'), 300);
 };
 
-window.openEditModal = (id, amount, symbol, network, source) => {
+window.openEditModal = (id, amount, symbol, network, source, label) => {
     document.getElementById('edit_asset_id').value = id;
     document.getElementById('edit_token_amount').value = amount;
     document.getElementById('edit_network').value = network;
     document.getElementById('edit_source_name').value = source;
+    document.getElementById('edit_label').value = label || '';
     document.getElementById('edit-token-label').innerText = symbol;
     const modal = document.getElementById('editAssetModal');
     modal.classList.remove('hidden');
@@ -147,6 +136,54 @@ window.updateHiddenId = (select) => {
     if (!select || select.selectedIndex === -1) return;
     const opt = select.options[select.selectedIndex];
     if (opt) document.getElementById('hidden_coingecko_id').value = opt.getAttribute('data-id');
+};
+
+// --- 搜索代币 ---
+window.searchToken = async (query) => {
+    const resDiv = document.getElementById('token_suggestions');
+    if (query.length < 1) return resDiv.classList.add('hidden');
+    try {
+        const tokens = await fetch('/api/tracked-tokens').then(res => res.json());
+        const filtered = tokens.filter(t => t.name.toLowerCase().includes(query.toLowerCase()) || t.symbol.toLowerCase().includes(query.toLowerCase())).slice(0, 5);
+        if (filtered.length > 0) {
+            resDiv.innerHTML = filtered.map(t => `<div onclick="selectToken('${t.coingecko_id}', '${t.name}')" class="p-2 hover:bg-slate-800 cursor-pointer text-white text-sm">${t.name} (${t.symbol})</div>`).join('');
+            resDiv.classList.remove('hidden');
+        } else {
+            resDiv.classList.add('hidden');
+        }
+    } catch (e) {
+        console.error('搜索代币失败', e);
+    }
+};
+
+window.selectToken = (id, name) => {
+    document.getElementById('add_coingecko_id').value = id;
+    document.getElementById('add_token_name').value = name;
+    document.getElementById('add_token_search').value = name;
+    document.getElementById('token_suggestions').classList.add('hidden');
+};
+
+// --- 搜索来源 ---
+window.searchSource = async (query) => {
+    const resDiv = document.getElementById('source_suggestions');
+    if (query.length < 1) return resDiv.classList.add('hidden');
+    try {
+        const wallets = await fetch('/api/wallets').then(res => res.json());
+        const filtered = wallets.filter(w => w.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5);
+        if (filtered.length > 0) {
+            resDiv.innerHTML = filtered.map(w => `<div onclick="selectSource('${w.name}')" class="p-2 hover:bg-slate-800 cursor-pointer text-white text-sm">${w.name}</div>`).join('');
+            resDiv.classList.remove('hidden');
+        } else {
+            resDiv.classList.add('hidden');
+        }
+    } catch (e) {
+        console.error('搜索来源失败', e);
+    }
+};
+
+window.selectSource = (name) => {
+    document.getElementById('add_source_name').value = name;
+    document.getElementById('source_suggestions').classList.add('hidden');
 };
 
 // --- 操作函数 ---
@@ -166,6 +203,7 @@ window.submitEditAsset = async (event) => {
     const amount = document.getElementById('edit_token_amount').value;
     const network = document.getElementById('edit_network').value;
     const source = document.getElementById('edit_source_name').value;
+    const label = document.getElementById('edit_label').value;
 
     try {
         const res = await fetch(`/api/assets/${id}`, {
@@ -179,7 +217,8 @@ window.submitEditAsset = async (event) => {
             body: JSON.stringify({
                 token_amount: parseFloat(amount),
                 network: network,
-                source_name: source
+                source_name: source,
+                label: label
             })
         });
 
@@ -199,13 +238,25 @@ window.submitEditAsset = async (event) => {
 
 window.submitNewAsset = async (event) => {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.target).entries());
+    const source_name = document.getElementById('add_source_name').value;
+    const token_name = document.getElementById('add_token_name').value;
+    const coingecko_id = document.getElementById('add_coingecko_id').value;
+    const token_amount = document.getElementById('add_token_amount').value;
+    const network = document.getElementById('add_network').value;
+    const label = document.getElementById('add_label').value;
+
+    if (!source_name || !token_name || !coingecko_id || !token_amount || !network) {
+        alert('请填写所有必填字段');
+        return;
+    }
+
     const res = await fetch('/api/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
-        body: JSON.stringify(data)
+        body: JSON.stringify({ source_name, token_name, coingecko_id, token_amount: parseFloat(token_amount), network, label })
     });
     if (res.ok) { window.closeAddModal(); await loadAllData(); }
+    else { alert('添加失败'); }
 };
 
 window.deleteAsset = async (id) => {
@@ -238,7 +289,7 @@ window.deleteWallet = async (id) => {
 window.dangerAction = async (type) => {
     const word = type === 'wipe' ? 'WIPE' : 'DELETE';
     if (prompt(`⚠️ 危险操作！请输入 ${word} 确认：`) !== word) return;
-    const urls = { 'snapshots': '/api/danger/snapshots', 'assets': '/api/danger/assets', 'wipe': '/api/danger/wipe' };
+    const urls = { 'snapshots': '/api/danger/snapshots', 'assets': '/api/danger/assets', 'capital': '/api/capital/clear', 'wipe': '/api/danger/wipe' };
     const res = await fetch(urls[type], { method: 'DELETE', headers: { 'X-CSRF-TOKEN': getCsrfToken() } });
     if (res.ok) location.reload();
 };
@@ -253,14 +304,51 @@ window.changeMonth = function (offset) {
 // ==========================================
 async function loadAllData() {
     try {
-        const mapRes = await fetch('/api/assets/thinking-map');
-        globalPortfolioData = await mapRes.json();
-        renderPortfolio(globalPortfolioData);
+        // 🎯 增加 fetch('/api/portfolio-stats')
+        const [mapRes, snapRes, statRes] = await Promise.all([
+            fetch('/api/assets/thinking-map').then(r => r.json()),
+            fetch(`/api/assets/snapshots?range=${currentRange}`).then(r => r.json()),
+            fetch('/api/portfolio-stats').then(r => r.json())
+        ]);
 
-        const snapRes = await fetch(`/api/assets/snapshots?range=${currentRange}`);
-        globalSnapshotData = await snapRes.json();
+        globalPortfolioData = mapRes;
+        globalSnapshotData = snapRes;
+
+        renderPortfolio(globalPortfolioData);
         renderChart(globalSnapshotData);
-    } catch (e) { console.error("首页数据加载失败", e); }
+
+        // 🎯 计算并显示 ROI
+        calculateROI(globalPortfolioData.value, statRes);
+    } catch (e) { console.error("数据加载失败", e); }
+}
+
+// 🎯 新增的算 ROI 的函数
+function calculateROI(currentValueUSD, stats) {
+    const { net_invested } = stats;
+    const badge = document.getElementById('roi-badge');
+    const valueElem = document.getElementById('roi-value');
+
+    if (!badge) return;
+
+    // 如果还没入金，隐藏 ROI
+    if (net_invested <= 0) {
+        badge.classList.add('hidden');
+        return;
+    }
+
+    // 利润 = 当前总资产 - 净本金
+    const profit = currentValueUSD - net_invested;
+    const roi = (profit / net_invested) * 100;
+
+    valueElem.innerText = `${roi > 0 ? '+' : ''}${roi.toFixed(2)}%`;
+    badge.classList.remove('hidden', 'bg-emerald-500/20', 'text-emerald-500', 'bg-rose-500/20', 'text-rose-500');
+
+    // 涨跌变色
+    if (roi >= 0) {
+        badge.classList.add('bg-emerald-500/20', 'text-emerald-500');
+    } else {
+        badge.classList.add('bg-rose-500/20', 'text-rose-500');
+    }
 }
 
 async function loadHistoryData() {
@@ -275,28 +363,40 @@ async function loadTrackedTokens() {
     const res = await fetch('/api/tracked-tokens');
     const tokens = await res.json();
     const list = document.getElementById('tracked-tokens-list');
-    if (list) list.innerHTML = tokens.map(t => `
+    if (!list) return;
+
+    list.innerHTML = tokens.map(t => {
+        const rawId = (t._id && (t._id.$oid || t._id)) || t.id || t.coingecko_id;
+        const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+        return `
         <tr class="hover:bg-slate-800/30">
             <td class="px-6 py-4 text-sm text-white">${t.name}</td>
             <td class="px-6 py-4 text-sm text-slate-500 font-mono">${t.coingecko_id}</td>
             <td class="px-6 py-4 text-right">
-                <button onclick="window.deleteTrackedToken('${t.id}')" class="text-red-500">停止</button>
+                <button onclick="window.deleteTrackedToken('${id}')" class="text-red-500">停止</button>
             </td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
 }
 
 async function loadWallets() {
     const res = await fetch('/api/wallets');
     const wallets = await res.json();
     const list = document.getElementById('wallets-list');
-    if (list) list.innerHTML = wallets.map(w => `
+    if (!list) return;
+
+    list.innerHTML = wallets.map(w => {
+        const rawId = (w._id && (w._id.$oid || w._id)) || w.id;
+        const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+        return `
         <tr class="hover:bg-slate-800/30">
             <td class="px-6 py-4 text-sm text-white">${w.name}</td>
             <td class="px-6 py-4 text-sm text-slate-500">${w.type}</td>
             <td class="px-6 py-4 text-right">
-                <button onclick="window.deleteWallet('${w.id}')" class="text-red-500">删除</button>
+                <button onclick="window.deleteWallet('${id}')" class="text-red-500">删除</button>
             </td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
 }
 
 // ==========================================
@@ -328,23 +428,32 @@ function renderPortfolio(data) {
             html += `<div class="mt-2 mb-1 text-[9px] font-bold text-slate-600 uppercase px-2 tracking-widest">${net.name}</div>`;
             net.children.forEach(token => {
                 html += `
-                    <div class="flex justify-between items-center py-2 group hover:bg-slate-800/30 px-3 rounded-xl transition-all">
-                        <div class="flex items-center gap-2">
-                            <span class="text-slate-50 text-sm font-bold">${token.amount}</span>
-                            <span class="text-sky-400 text-[11px] font-mono font-black">${token.symbol}</span>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <span class="text-white text-sm font-mono">${formatMoney(token.value)}</span>
-                            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                <button onclick="window.openEditModal('${token.id}', '${token.amount}', '${token.symbol}', '${net.name}', '${source.name}')" class="p-1 text-slate-500 hover:text-sky-400">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                </button>
-                                <button onclick="window.deleteAsset('${token.id}')" class="p-1 text-slate-700 hover:text-red-500">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                </button>
-                            </div>
-                        </div>
-                    </div>`;
+        <div class="flex justify-between items-center py-2 group hover:bg-slate-800/30 px-3 rounded-xl transition-all">
+            <div class="flex items-center gap-2">
+                <div class="flex flex-col items-start">
+                    <div class="flex items-center gap-2">
+                        <span class="text-slate-50 text-sm font-bold">${token.amount}</span>
+                        <span class="text-sky-400 text-[11px] font-mono font-black">${token.symbol || 'TOKEN'}</span>
+                    </div>
+                    ${token.label ? `
+                        <span class="text-[9px] text-slate-500 font-medium uppercase tracking-wider mt-0.5 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50">
+                            #${token.label}
+                        </span>` : ''}
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <span class="text-white text-sm font-mono">${formatMoney(token.value)}</span>
+                <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                    <button onclick="window.openEditModal('${token.id}', '${token.amount}', '${token.symbol}', '${net.name}', '${source.name}', '${(token.label || '').replace(/'/g, "\\'")}')" class="p-1 text-slate-500 hover:text-sky-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <button onclick="window.deleteAsset('${token.id}')" class="p-1 text-slate-700 hover:text-red-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </div>
+            </div>
+        </div>`;
             });
         });
         card.innerHTML = html + `</div></div>`;
@@ -356,12 +465,38 @@ function renderChart(data) {
     if (!data || !data.times || data.times.length === 0) return;
     const chartDom = document.getElementById('echarts-container');
     if (!myChart) myChart = echarts.init(chartDom);
-    const seriesData = data.times.map((t, i) => [t, isMYR ? data.values[i] * MYR_RATE : data.values[i]]);
+    
+    // 资产市值线
+    const assetData = data.times.map((t, i) => [t, isMYR ? data.values[i] * MYR_RATE : data.values[i]]);
+    // 🎯 本金水位线 (安全获取数据)
+    const investedData = data.times.map((t, i) => [t, isMYR ? (data.invested[i] || 0) * MYR_RATE : (data.invested[i] || 0)]);
+
     myChart.setOption({
+        legend: { show: true, textStyle: { color: '#64748b' }, bottom: 0 },
         tooltip: { trigger: 'axis', backgroundColor: '#0f172a', textStyle: { color: '#fff' } },
         xAxis: { type: 'time', axisLabel: { color: '#64748b' } },
         yAxis: { type: 'value', scale: true, axisLabel: { color: '#64748b' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
-        series: [{ data: seriesData, type: 'line', smooth: 0.4, itemStyle: { color: '#38bdf8' }, areaStyle: { color: 'rgba(56, 189, 248, 0.1)' } }]
+        series: [
+            { 
+                name: '资产市值 (Value)',
+                data: assetData, 
+                type: 'line', 
+                smooth: 0.4, 
+                itemStyle: { color: '#38bdf8' }, 
+                areaStyle: { color: 'rgba(56, 189, 248, 0.1)' },
+                z: 2
+            },
+            {
+                name: '净投入本金 (Net Invested)',
+                data: investedData,
+                type: 'line',
+                step: 'end', // 🎯 重点：阶梯状连接，体现入金瞬间的资产跃升
+                symbol: 'none',
+                lineStyle: { type: 'dashed', width: 2, color: '#f59e0b' }, // 橙色虚线
+                itemStyle: { color: '#f59e0b' },
+                z: 1
+            }
+        ]
     }, true);
 }
 
@@ -545,7 +680,7 @@ function initCurrencyToggle() {
     // 🌟 B. 点击处理逻辑
     toggle.onclick = () => {
         isMYR = !isMYR;
-        
+
         // 1. 持久化保存到浏览器
         localStorage.setItem('preferred_currency', isMYR ? 'MYR' : 'USD');
 
@@ -556,7 +691,7 @@ function initCurrencyToggle() {
 
         // 3. 🎯 核心修复：通知所有页面组件立即使用新汇率重绘
         console.log(`💱 汇率已切换至: ${isMYR ? 'MYR' : 'USD'}`);
-        refreshMyChart(); 
+        refreshMyChart();
     };
 }
 
@@ -568,12 +703,12 @@ function refreshMyChart() {
     if (document.getElementById('grid-container')) {
         renderPortfolio(globalPortfolioData);
     }
-    
+
     // 刷新首页走势图
     if (document.getElementById('echarts-container') && globalSnapshotData) {
         renderChart(globalSnapshotData);
     }
-    
+
     // 刷新盈亏历史页的两个日历
     if (document.getElementById('calendar-echarts-container') && globalSnapshotData) {
         renderCalendarHistory(globalSnapshotData);
@@ -634,13 +769,14 @@ window.submitTrackedToken = async () => {
     try {
         const res = await fetch('/api/tracked-tokens', {
             method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json', 
-                'X-CSRF-TOKEN': getCsrfToken() 
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json', // 🎯 核心修复 1：强制要求 Laravel 无论如何都返回 JSON
+                'X-CSRF-TOKEN': getCsrfToken()
             },
-            body: JSON.stringify({ 
-                coingecko_id: id, 
-                name: name 
+            body: JSON.stringify({
+                coingecko_id: id,
+                name: name
             })
         });
 
@@ -652,11 +788,19 @@ window.submitTrackedToken = async () => {
             // 刷新列表
             loadTrackedTokens();
         } else {
-            const err = await res.json();
-            alert("❌ 添加失败: " + (err.message || "该代币可能已在追踪列表中"));
+            // 🎯 核心修复 2：安全地解析错误信息，防止再次出现 HTML 解析崩溃
+            let errorMessage = "请求被服务器拒绝";
+            try {
+                const err = await res.json();
+                errorMessage = err.message || "后端处理失败 (可能是 CoinGecko 接口请求过于频繁)";
+            } catch (parseError) {
+                console.error("后端返回了非 JSON 格式的错误 (可能是 500 致命错误)");
+            }
+            alert("❌ 添加失败: " + errorMessage);
         }
     } catch (e) {
         console.error("提交追踪代币出错:", e);
+        alert("网络请求发生异常");
     }
 };
 
@@ -667,8 +811,8 @@ window.deleteTrackedToken = async (id) => {
     try {
         const res = await fetch(`/api/tracked-tokens/${id}`, {
             method: 'DELETE',
-            headers: { 
-                'X-CSRF-TOKEN': getCsrfToken() 
+            headers: {
+                'X-CSRF-TOKEN': getCsrfToken()
             }
         });
 

@@ -28,6 +28,15 @@
             盈亏历史
         </a>
 
+        <a href="/capital"
+            class="flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all {{ request()->is('capital') ? 'nav-active' : 'nav-inactive' }}">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+            </svg>
+            出入金
+        </a>
+
         <a href="/settings"
             class="flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all {{ request()->is('settings') ? 'nav-active' : 'nav-inactive' }}">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
