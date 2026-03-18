@@ -25,6 +25,7 @@ const getCsrfToken = () => document.querySelector('meta[name="csrf-token"]')?.ge
 /**
  * 格式化金额：自动识别 USD 或 MYR
  */
+// public/dashboard.js
 function formatMoney(usdValue) {
     const val = parseFloat(usdValue) || 0;
     if (isMYR) {
@@ -34,6 +35,18 @@ function formatMoney(usdValue) {
         });
     }
     return '$' + val.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
+}
+
+/**
+ * 🎯 新增：图表专用格式化（由于图表数据已在传入前转换过汇率，这里只负责加符号和保留2位小数）
+ */
+function formatChartMoney(value) {
+    const val = parseFloat(value) || 0;
+    const prefix = isMYR ? 'RM ' : '$';
+    return prefix + val.toLocaleString(undefined, {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
@@ -336,9 +349,12 @@ function calculateROI(currentValueUSD, stats) {
         return;
     }
 
+    // 注意：net_invested 是以 MYR 计价的，因此在 USD 模式下要先换算回 USD
+    const netInvestedUSD = isMYR ? net_invested : net_invested / MYR_RATE;
+
     // 利润 = 当前总资产 - 净本金
-    const profit = currentValueUSD - net_invested;
-    const roi = (profit / net_invested) * 100;
+    const profit = currentValueUSD - netInvestedUSD;
+    const roi = (profit / netInvestedUSD) * 100;
 
     valueElem.innerText = `${roi > 0 ? '+' : ''}${roi.toFixed(2)}%`;
     badge.classList.remove('hidden', 'bg-emerald-500/20', 'text-emerald-500', 'bg-rose-500/20', 'text-rose-500');
@@ -465,24 +481,46 @@ function renderChart(data) {
     if (!data || !data.times || data.times.length === 0) return;
     const chartDom = document.getElementById('echarts-container');
     if (!myChart) myChart = echarts.init(chartDom);
-    
-    // 资产市值线
+
+    // 数据在此时：
+    // - values: 以 USD 计价的资产总价值
+    // - invested: 以 MYR 计价的净投入本金（来源于资金流水中的 fiat_amount）
     const assetData = data.times.map((t, i) => [t, isMYR ? data.values[i] * MYR_RATE : data.values[i]]);
-    // 🎯 本金水位线 (安全获取数据)
-    const investedData = data.times.map((t, i) => [t, isMYR ? (data.invested[i] || 0) * MYR_RATE : (data.invested[i] || 0)]);
+    const investedData = data.times.map((t, i) => {
+        const investedMYR = parseFloat(data.invested[i] || 0);
+        // 在 USD 模式下，需要将 MYR 转回 USD；在 MYR 模式下直接使用（避免二次乘汇率）
+        const invested = isMYR ? investedMYR : investedMYR / MYR_RATE;
+        return [t, invested];
+    });
 
     myChart.setOption({
         legend: { show: true, textStyle: { color: '#64748b' }, bottom: 0 },
-        tooltip: { trigger: 'axis', backgroundColor: '#0f172a', textStyle: { color: '#fff' } },
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#0f172a',
+            borderColor: '#1e293b',
+            textStyle: { color: '#fff' },
+            // 🎯 限制 Tooltip 提示框的数值为两位小数
+            valueFormatter: (value) => formatChartMoney(value)
+        },
         xAxis: { type: 'time', axisLabel: { color: '#64748b' } },
-        yAxis: { type: 'value', scale: true, axisLabel: { color: '#64748b' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+        yAxis: {
+            type: 'value',
+            scale: true,
+            // 🎯 限制 Y轴 左侧的刻度数值为两位小数
+            axisLabel: {
+                color: '#64748b',
+                formatter: (value) => formatChartMoney(value)
+            },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } }
+        },
         series: [
-            { 
+            {
                 name: '资产市值 (Value)',
-                data: assetData, 
-                type: 'line', 
-                smooth: 0.4, 
-                itemStyle: { color: '#38bdf8' }, 
+                data: assetData,
+                type: 'line',
+                smooth: 0.4,
+                itemStyle: { color: '#38bdf8' },
                 areaStyle: { color: 'rgba(56, 189, 248, 0.1)' },
                 z: 2
             },
@@ -490,9 +528,9 @@ function renderChart(data) {
                 name: '净投入本金 (Net Invested)',
                 data: investedData,
                 type: 'line',
-                step: 'end', // 🎯 重点：阶梯状连接，体现入金瞬间的资产跃升
+                step: 'end',
                 symbol: 'none',
-                lineStyle: { type: 'dashed', width: 2, color: '#f59e0b' }, // 橙色虚线
+                lineStyle: { type: 'dashed', width: 2, color: '#f59e0b' },
                 itemStyle: { color: '#f59e0b' },
                 z: 1
             }
@@ -553,18 +591,13 @@ function renderCalendarHistory(data) {
 
     // --- 提取公共 Tooltip ---
     const commonTooltip = {
-        backgroundColor: 'rgba(15, 23, 42, 0.95)', borderColor: '#334155', padding: 12, textStyle: { color: '#f8fafc' },
-        formatter: function (p) {
-            const [date, pnl, pct, total, hasData] = p.value;
-            if (!hasData && total === 0) return `<div class="font-bold text-slate-500">${date}<br>暂无数据</div>`;
-            const isUp = pnl > 0; const isDown = pnl < 0;
-            const colorClass = isUp ? 'text-emerald-400' : (isDown ? 'text-rose-400' : 'text-slate-400');
-            const sign = isUp ? '+' : (isDown ? '-' : '');
-            return `
-                <div class="font-bold text-slate-300 border-b border-slate-700 pb-2 mb-2">${date}</div>
-                <div class="flex justify-between gap-6 mb-1 text-xs"><span>资产总额:</span><span class="font-bold">${formatMoney(total)}</span></div>
-                <div class="flex justify-between gap-6 mb-1 text-xs"><span>当日盈亏:</span><span class="font-bold ${colorClass}">${sign}${formatMoney(Math.abs(pnl))}</span></div>
-                <div class="flex justify-between gap-6 text-xs"><span>涨跌幅:</span><span class="font-bold ${colorClass}">${sign}${Math.abs(pct).toFixed(2)}%</span></div>`;
+        backgroundColor: '#0f172a', textStyle: { color: '#f8fafc' },
+        formatter: (p) => {
+            const [date, pnl, pct, total, has] = p.value;
+            if (!has && total === 0) return `${date}<br>无数据`;
+            const color = pnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            // 🎯 替换为 formatChartMoney，防止 RM 汇率被乘两次，且强制两位小数
+            return `<div class="p-2"><b>${date}</b><br>总额: ${formatChartMoney(total)}<br>盈亏: <span class="${color}">${pnl >= 0 ? '+' : ''}${formatChartMoney(pnl)} (${pct.toFixed(2)}%)</span></div>`;
         }
     };
 
@@ -611,23 +644,16 @@ function renderCalendarHistory(data) {
         },
         series: [
             { type: 'heatmap', coordinateSystem: 'calendar', data: mData },
-            {
-                type: 'scatter', coordinateSystem: 'calendar', data: mData, symbolSize: 0, silent: true,
-                label: {
-                    show: true, position: 'inside',
-                    formatter: function (p) {
-                        const [date, pnl, pct, total, has] = p.value;
-                        if (!has && total === 0) return '{empty|--}';
-                        const isUp = pnl > 0; const sign = isUp ? '+' : (pnl < 0 ? '-' : '');
-                        const color = isUp ? '{up|' : '{down|';
-                        return `${color}${sign}${formatMoney(Math.abs(pnl))}}`;
-                    },
-                    rich: {
-                        up: { color: '#34d399', fontSize: 16, fontWeight: '900' },
-                        down: { color: '#f43f5e', fontSize: 16, fontWeight: '900' },
-                        empty: { color: '#1e293b', fontSize: 14 }
-                    }
-                }
+            { 
+                type: 'scatter', 
+                coordinateSystem: 'calendar', 
+                data: mData, 
+                symbolSize: 0, 
+                label: { 
+                    show: true, 
+                    // 🎯 替换为 formatChartMoney
+                    formatter: (p) => p.value[1] === 0 ? '' : (p.value[1]>0?'+':'') + formatChartMoney(p.value[1]) 
+                } 
             },
             // 添加日期角标
             {

@@ -71,9 +71,9 @@ class AssetController extends Controller
      */
     public function getPortfolioStats()
     {
-        // 建议统一使用 usdt_amount (USDT 计价) 来作为本金基准
-        $totalDeposit = DB::table('capital_flows')->where('type', 'DEPOSIT')->sum('usdt_amount');
-        $totalWithdraw = DB::table('capital_flows')->where('type', 'WITHDRAWAL')->sum('usdt_amount');
+        // 改为累加法币金额 fiat_amount
+        $totalDeposit = DB::table('capital_flows')->where('type', 'DEPOSIT')->sum('fiat_amount');
+        $totalWithdraw = DB::table('capital_flows')->where('type', 'WITHDRAWAL')->sum('fiat_amount');
 
         return response()->json([
             'total_deposited' => (float) $totalDeposit,
@@ -111,7 +111,7 @@ class AssetController extends Controller
             $netInvestedAtPoint = $flows->filter(function ($f) use ($carbonTime) {
                 return Carbon::parse($f->transaction_date)->endOfDay() <= $carbonTime->endOfDay();
             })->sum(function ($f) {
-                return $f->type === 'DEPOSIT' ? $f->usdt_amount : -$f->usdt_amount;
+                return $f->type === 'DEPOSIT' ? $f->fiat_amount : -$f->fiat_amount;
             });
 
             $invested[] = round((float) $netInvestedAtPoint, 2);
