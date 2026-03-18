@@ -504,18 +504,16 @@ function renderPortfolio(data) {
     });
 }
 
+// public/dashboard.js
+
 function renderChart(data) {
     if (!data || !data.times || data.times.length === 0) return;
     const chartDom = document.getElementById('echarts-container');
     if (!myChart) myChart = echarts.init(chartDom);
 
-    // 数据在此时：
-    // - values: 以 USD 计价的资产总价值
-    // - invested: 以 MYR 计价的净投入本金（来源于资金流水中的 fiat_amount）
     const assetData = data.times.map((t, i) => [t, isMYR ? data.values[i] * MYR_RATE : data.values[i]]);
     const investedData = data.times.map((t, i) => {
         const investedMYR = parseFloat(data.invested[i] || 0);
-        // 在 USD 模式下，需要将 MYR 转回 USD；在 MYR 模式下直接使用（避免二次乘汇率）
         const invested = isMYR ? investedMYR : investedMYR / MYR_RATE;
         return [t, invested];
     });
@@ -523,18 +521,21 @@ function renderChart(data) {
     myChart.setOption({
         legend: { show: true, textStyle: { color: '#64748b' }, bottom: 0 },
         tooltip: {
-            trigger: 'axis',
+            trigger: 'axis', // 🎯 必须是 axis，悬停在垂直线上时触发
             backgroundColor: '#0f172a',
             borderColor: '#1e293b',
             textStyle: { color: '#fff' },
-            // 🎯 限制 Tooltip 提示框的数值为两位小数
-            valueFormatter: (value) => formatChartMoney(value)
+            valueFormatter: (value) => formatChartMoney(value),
+            // 增加指示线，方便对准
+            axisPointer: {
+                type: 'line',
+                lineStyle: { color: 'rgba(255, 255, 255, 0.1)', type: 'dashed' }
+            }
         },
         xAxis: { type: 'time', axisLabel: { color: '#64748b' } },
         yAxis: {
             type: 'value',
             scale: true,
-            // 🎯 限制 Y轴 左侧的刻度数值为两位小数
             axisLabel: {
                 color: '#64748b',
                 formatter: (value) => formatChartMoney(value)
@@ -549,6 +550,20 @@ function renderChart(data) {
                 smooth: 0.4,
                 itemStyle: { color: '#38bdf8' },
                 areaStyle: { color: 'rgba(56, 189, 248, 0.1)' },
+                // 🎯 关键修改 1：平时不显示 symbol
+                showSymbol: false, 
+                // 🎯 关键修改 2：定义点的样式和大小
+                symbol: 'circle',
+                symbolSize: 8,
+                // 🎯 关键修改 3：悬停时的强化状态
+                emphasis: {
+                    focus: 'series',
+                    itemStyle: {
+                        color: '#38bdf8',
+                        borderColor: '#fff',
+                        borderWidth: 2
+                    }
+                },
                 z: 2
             },
             {
@@ -556,9 +571,20 @@ function renderChart(data) {
                 data: investedData,
                 type: 'line',
                 step: 'end',
-                symbol: 'none',
-                lineStyle: { type: 'dashed', width: 2, color: '#f59e0b' },
                 itemStyle: { color: '#f59e0b' },
+                lineStyle: { type: 'dashed', width: 2, color: '#f59e0b' },
+                // 🎯 同样处理本金线
+                showSymbol: false,
+                symbol: 'circle',
+                symbolSize: 8,
+                emphasis: {
+                    focus: 'series',
+                    itemStyle: {
+                        color: '#f59e0b',
+                        borderColor: '#fff',
+                        borderWidth: 2
+                    }
+                },
                 z: 1
             }
         ]
