@@ -50,6 +50,7 @@
                                 class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
                             <input type="text" id="newTokenId" placeholder="ID" readonly
                                 class="w-32 bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2 text-slate-500">
+                            <input type="hidden" id="newTokenSymbol">
                             <button onclick="submitTrackedToken()"
                                 class="bg-sky-500 text-white px-6 py-2 rounded-xl">确认添加</button>
                         </div>

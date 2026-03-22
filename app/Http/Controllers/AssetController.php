@@ -284,25 +284,102 @@ class AssetController extends Controller
         return response()->json(DB::table('tracked_tokens')->get());
     }
 
+    public function searchTrackedTokens(Request $request)
+    {
+        $query = trim((string) $request->query('query', ''));
+        if (mb_strlen($query) < 2) {
+            return response()->json(['coins' => []]);
+        }
+
+        $cacheKey = 'cg_search_' . md5(strtolower($query));
+        $coins = Cache::remember($cacheKey, 30, function () use ($query) {
+            $res = Http::timeout(10)->get('https://api.coingecko.com/api/v3/search', [
+                'query' => $query,
+            ]);
+
+            if (!$res->successful()) {
+                return [];
+            }
+
+            $payload = $res->json();
+            $list = $payload['coins'] ?? [];
+
+            return collect($list)
+                ->take(8)
+                ->map(function ($item) {
+                    return [
+                        'id' => $item['id'] ?? '',
+                        'name' => $item['name'] ?? '',
+                        'symbol' => $item['symbol'] ?? '',
+                    ];
+                })
+                ->filter(fn($x) => !empty($x['id']) && !empty($x['name']))
+                ->values()
+                ->all();
+        });
+
+        return response()->json(['coins' => $coins]);
+    }
+
     public function addTrackedToken(Request $request)
     {
         try {
             $validated = $request->validate([
                 'coingecko_id' => 'required|string',
-                'name' => 'required|string'
+                'name' => 'required|string',
+                'symbol' => 'nullable|string'
             ]);
 
-            $id = strtolower($validated['coingecko_id']);
+            $id = strtolower(trim($validated['coingecko_id']));
+            $name = trim($validated['name']);
+            $symbol = isset($validated['symbol']) ? strtolower(trim($validated['symbol'])) : '';
+
             if (empty($id)) {
                 return response()->json(['status' => 'error', 'message' => 'CoinGecko ID is required'], 400);
+            }
+
+            // 优先使用前端已选中的 symbol，避免再次请求 CoinGecko 导致 429。
+            if (!empty($symbol)) {
+                DB::table('tracked_tokens')->updateOrInsert(
+                    ['coingecko_id' => $id],
+                    ['name' => $name, 'symbol' => $symbol, 'updated_at' => now()]
+                );
+                return response()->json(['status' => 'success', 'source' => 'client']);
+            }
+
+            // 与同步命令一致：优先尝试通过中转站验证代币 ID，避免官方接口 429。
+            $proxyUrl = config('services.coingecko.proxy_url');
+            $proxyKey = config('services.coingecko.proxy_key');
+            if (!empty($proxyUrl) && !empty($proxyKey)) {
+                $proxyRes = Http::withHeaders(['x-proxy-key' => $proxyKey])
+                    ->timeout(10)
+                    ->get($proxyUrl, [
+                        'ids' => $id,
+                        'vs_currencies' => 'usd'
+                    ]);
+
+                if ($proxyRes->successful()) {
+                    $proxyData = $proxyRes->json();
+                    if (is_array($proxyData) && array_key_exists($id, $proxyData)) {
+                        $fallbackSymbol = strtolower(substr(explode('-', $id)[0], 0, 10));
+                        DB::table('tracked_tokens')->updateOrInsert(
+                            ['coingecko_id' => $id],
+                            ['name' => $name, 'symbol' => $fallbackSymbol, 'updated_at' => now()]
+                        );
+                        return response()->json(['status' => 'success', 'source' => 'proxy']);
+                    }
+                }
             }
 
             $res = Http::timeout(10)->get("https://api.coingecko.com/api/v3/coins/{$id}");
             if ($res->successful()) {
                 $data = $res->json();
+                $resolvedName = $data['name'] ?? $name;
+                $resolvedSymbol = $data['symbol'] ?? strtoupper(substr(explode('-', $id)[0], 0, 10));
+
                 DB::table('tracked_tokens')->updateOrInsert(
                     ['coingecko_id' => $id],
-                    ['name' => $data['name'], 'symbol' => $data['symbol'], 'updated_at' => now()]
+                    ['name' => $resolvedName, 'symbol' => strtolower($resolvedSymbol), 'updated_at' => now()]
                 );
                 return response()->json(['status' => 'success']);
             } else {

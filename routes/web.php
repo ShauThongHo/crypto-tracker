@@ -50,6 +50,7 @@ Route::prefix('api')->group(function () {
     Route::delete('/wallets/{id}', [AssetController::class, 'deleteWallet']);
 
     Route::get('/tracked-tokens', [AssetController::class, 'getTrackedTokens']);
+    Route::get('/tracked-tokens/search', [AssetController::class, 'searchTrackedTokens']);
     Route::post('/tracked-tokens', [AssetController::class, 'addTrackedToken']);
     Route::delete('/tracked-tokens/{id}', [AssetController::class, 'deleteTrackedToken']);
 

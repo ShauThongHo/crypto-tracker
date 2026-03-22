@@ -1,4 +1,4 @@
-﻿/**
+/**
  * HST Dashboard - Final Refined Logic (Integrated Version)
  */
 
@@ -826,18 +826,24 @@ window.searchCoinGeckoTracked = (query) => {
     if (query.length < 2) return resDiv.classList.add('hidden');
     clearTimeout(trackedSearchTimer);
     trackedSearchTimer = setTimeout(async () => {
-        const r = await fetch(`https://api.coingecko.com/api/v3/search?query=${query}`);
+        const r = await fetch(`/api/tracked-tokens/search?query=${encodeURIComponent(query)}`);
         const d = await r.json();
         if (d.coins) {
-            resDiv.innerHTML = d.coins.slice(0, 5).map(c => `<div onclick="window.selectTrackedToken('${c.id}', '${c.name}')" class="p-2 hover:bg-slate-800 cursor-pointer text-white text-sm">${c.name} (${c.symbol})</div>`).join('');
+            resDiv.innerHTML = d.coins.slice(0, 5).map(c => {
+                const name = (c.name || '').replace(/'/g, "\\'");
+                const symbol = (c.symbol || '').replace(/'/g, "\\'");
+                return `<div onclick="window.selectTrackedToken('${c.id}', '${name}', '${symbol}')" class="p-2 hover:bg-slate-800 cursor-pointer text-white text-sm">${c.name} (${c.symbol})</div>`;
+            }).join('');
             resDiv.classList.remove('hidden');
         }
     }, 300);
 };
 
-window.selectTrackedToken = (id, name) => {
+window.selectTrackedToken = (id, name, symbol = '') => {
     document.getElementById('newTokenId').value = id;
     document.getElementById('search_tracked_input').value = name;
+    const symbolInput = document.getElementById('newTokenSymbol');
+    if (symbolInput) symbolInput.value = symbol;
     document.getElementById('tracked_search_results').classList.add('hidden');
 };
 
@@ -845,6 +851,7 @@ window.selectTrackedToken = (id, name) => {
 window.submitTrackedToken = async () => {
     const id = document.getElementById('newTokenId').value;
     const name = document.getElementById('search_tracked_input').value;
+    const symbol = document.getElementById('newTokenSymbol')?.value || '';
 
     if (!id) {
         return alert("请先通过搜索框选择一个代币");
@@ -860,7 +867,8 @@ window.submitTrackedToken = async () => {
             },
             body: JSON.stringify({
                 coingecko_id: id,
-                name: name
+                name: name,
+                symbol: symbol
             })
         });
 
@@ -869,6 +877,8 @@ window.submitTrackedToken = async () => {
             // 清空输入框
             document.getElementById('newTokenId').value = '';
             document.getElementById('search_tracked_input').value = '';
+            const symbolInput = document.getElementById('newTokenSymbol');
+            if (symbolInput) symbolInput.value = '';
             // 刷新列表
             loadTrackedTokens();
         } else {
