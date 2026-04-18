@@ -70,16 +70,22 @@ Route::prefix('api')->group(function () {
 // UptimeRobot 戳的保活+触发接口
 Route::get('/health-check', function () {
     try {
-        // 强制执行同步命令，解决 Render/UptimeRobot 的对齐问题
+        // 執行指令
         Artisan::call('app:sync-crypto-data');
+        
+        // 獲取指令輸出的內容（這是排查關鍵！）
         $output = Artisan::output();
+
+        // 記錄到 Laravel 的日誌檔案裡，這樣你可以去 storage/logs/laravel.log 看
+        Log::info("Termux 喚醒請求成功執行。指令輸出：" . $output);
 
         return response()->json([
             'status' => 'alive',
             'time' => now()->toDateTimeString(),
-            'command_output' => $output 
+            'command_output' => $output // 看看這裡面是不是寫著 "Too Many Requests" 或是 "Success"
         ]);
     } catch (\Exception $e) {
+        Log::error("喚醒失敗：" . $e->getMessage());
         return response()->json(['error' => $e->getMessage()], 500);
     }
 });
