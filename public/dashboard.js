@@ -17,6 +17,7 @@ let currentRange = '1D';
 let lastKnownSync = null;
 let currentViewMonthDate = new Date();
 let trackedSearchTimer = null;
+let currentBreakdownView = 'wallets';
 
 // CSRF Token 工具函数
 const getCsrfToken = () => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -453,6 +454,30 @@ function renderPortfolio(data) {
     totalElem.innerText = formatMoney(data.value || 0);
     container.innerHTML = '';
 
+    const switchCard = document.createElement('div');
+    switchCard.className = 'bento-card full-row-card';
+    switchCard.innerHTML = `
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+                <h3 class="text-white text-xl font-semibold tracking-tight">Portfolio Breakdown</h3>
+                <p class="text-slate-400 text-xs md:text-sm mt-1">选择更适合当前分析的视图：钱包便当盒或资产占比表。</p>
+            </div>
+            <div class="inline-flex bg-slate-900/80 border border-slate-700 rounded-2xl p-1.5 self-start md:self-auto shadow-lg">
+                <button id="breakdown-wallets-btn" onclick="window.switchBreakdownView('wallets')" class="px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all">钱包视图</button>
+                <button id="breakdown-assets-btn" onclick="window.switchBreakdownView('assets')" class="px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all">资产占比</button>
+            </div>
+        </div>`;
+    container.appendChild(switchCard);
+    updateBreakdownToggleUI();
+
+    if (currentBreakdownView === 'assets') {
+        const assetCard = document.createElement('div');
+        assetCard.className = 'bento-card full-row-card';
+        assetCard.innerHTML = buildAssetAllocationCard(data);
+        container.appendChild(assetCard);
+        return;
+    }
+
     (data.children || []).forEach((source, index) => {
         const isFull = (index % 2 === 0 && index === data.children.length - 1);
         const card = document.createElement('div');
@@ -503,6 +528,112 @@ function renderPortfolio(data) {
         container.appendChild(card);
     });
 }
+
+function updateBreakdownToggleUI() {
+    const walletsBtn = document.getElementById('breakdown-wallets-btn');
+    const assetsBtn = document.getElementById('breakdown-assets-btn');
+    if (!walletsBtn || !assetsBtn) return;
+
+    const activate = (btn) => {
+        btn.classList.add('bg-sky-500', 'text-white', 'shadow-lg', 'shadow-sky-500/25');
+        btn.classList.remove('text-slate-400', 'hover:text-slate-200');
+    };
+    const deactivate = (btn) => {
+        btn.classList.remove('bg-sky-500', 'text-white', 'shadow-lg', 'shadow-sky-500/25');
+        btn.classList.add('text-slate-400', 'hover:text-slate-200');
+    };
+
+    if (currentBreakdownView === 'assets') {
+        deactivate(walletsBtn);
+        activate(assetsBtn);
+    } else {
+        activate(walletsBtn);
+        deactivate(assetsBtn);
+    }
+}
+
+function buildAssetAllocationCard(data) {
+    const allocations = calculateAssetAllocations(data);
+    if (allocations.length === 0) {
+        return `
+            <div class="text-center py-12">
+                <div class="text-slate-400 text-sm">暂无资产可用于占比分析</div>
+            </div>`;
+    }
+
+    const topPct = allocations[0].percentage;
+    const rows = allocations.map((item, index) => {
+        const barWidth = Math.max(2, Math.round(item.percentage));
+        const ratio = topPct > 0 ? (item.percentage / topPct) * 100 : 0;
+        return `
+            <div class="py-3 px-3 rounded-2xl border border-slate-800/70 bg-slate-900/45 hover:border-sky-500/40 transition-all">
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <span class="h-2.5 w-2.5 rounded-full shrink-0" style="background:${item.color}"></span>
+                        <div class="min-w-0">
+                            <div class="text-white text-sm font-semibold truncate">${item.symbol}</div>
+                            <div class="text-[11px] text-slate-500">持仓总量: ${item.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}</div>
+                        </div>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="text-white text-sm font-semibold">${formatMoney(item.value)}</div>
+                        <div class="text-[11px] font-bold" style="color:${item.color}">${item.percentage.toFixed(2)}%</div>
+                    </div>
+                </div>
+                <div class="mt-2.5 h-2.5 rounded-full bg-slate-800/90 overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" style="width:${barWidth}%; background:linear-gradient(90deg, ${item.color} 0%, rgba(255,255,255,0.95) ${Math.max(35, ratio).toFixed(0)}%, ${item.color} 100%);"></div>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 uppercase tracking-widest">Rank #${index + 1}</div>
+            </div>`;
+    }).join('');
+
+    return `
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3 pb-4 border-b border-slate-800">
+            <div>
+                <h3 class="text-white text-xl font-semibold tracking-tight">Asset Allocation</h3>
+                <p class="text-slate-400 text-xs md:text-sm mt-1">聚合所有钱包中的资产，按市值展示占比结构。</p>
+            </div>
+            <div class="inline-flex items-center gap-2 bg-slate-900/70 border border-slate-700 rounded-xl px-3 py-2">
+                <span class="text-[10px] text-slate-500 uppercase tracking-widest">Total</span>
+                <span class="text-white text-sm font-semibold">${formatMoney(data.value || 0)}</span>
+            </div>
+        </div>
+        <div class="mt-4 flex flex-col gap-3">
+            ${rows}
+        </div>`;
+}
+
+function calculateAssetAllocations(data) {
+    const totalValue = Number(data.value || 0);
+    const assetMap = new Map();
+
+    (data.children || []).forEach(source => {
+        (source.children || []).forEach(net => {
+            (net.children || []).forEach(token => {
+                const symbol = (token.symbol || token.name || 'UNKNOWN').toUpperCase();
+                const current = assetMap.get(symbol) || { symbol, value: 0, amount: 0 };
+                current.value += Number(token.value || 0);
+                current.amount += Number(token.amount || 0);
+                assetMap.set(symbol, current);
+            });
+        });
+    });
+
+    const palette = ['#38bdf8', '#10b981', '#f59e0b', '#fb7185', '#22d3ee', '#a78bfa', '#f97316', '#60a5fa'];
+
+    return Array.from(assetMap.values())
+        .sort((a, b) => b.value - a.value)
+        .map((item, index) => ({
+            ...item,
+            color: palette[index % palette.length],
+            percentage: totalValue > 0 ? (item.value / totalValue) * 100 : 0
+        }));
+}
+
+window.switchBreakdownView = (view) => {
+    currentBreakdownView = view === 'assets' ? 'assets' : 'wallets';
+    renderPortfolio(globalPortfolioData);
+};
 
 // public/dashboard.js
 
