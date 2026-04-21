@@ -104,21 +104,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 初始化通用 UI 交互
     initCurrencyToggle();
 
-    // A. 自动检测首页容器
-    if (document.getElementById('grid-container')) {
-        await loadAllData();
-    }
-
-    // B. 自动检测设置页容器
-    if (document.getElementById('tracked-tokens-list')) {
-        loadTrackedTokens();
-        loadWallets();
-    }
-
-    // C. 自动检测历史页容器
-    if (document.getElementById('calendar-echarts-container')) {
-        loadHistoryData();
-    }
+    // 🎯 核心改进：后台预加载所有主要数据，不用等待用户进入页面
+    Promise.all([
+        loadAllData().catch(e => console.error("投资组合数据加载失败:", e)),
+        loadHistoryData().catch(e => console.error("历史日历数据加载失败:", e)),
+        loadTrackedTokens().catch(e => console.error("追踪代币加载失败:", e)),
+        loadWallets().catch(e => console.error("钱包加载失败:", e))
+    ]).then(() => {
+        console.log("✅ 所有后台数据预加载完毕");
+    });
 
     // 通用背景任务
     initAlignedTimer();
@@ -227,6 +221,12 @@ window.changeRange = async (range) => {
     const btns = document.querySelectorAll('.range-btn');
     btns.forEach(b => b.classList.toggle('bg-sky-500', b.innerText === range));
     btns.forEach(b => b.classList.toggle('text-white', b.innerText === range));
+    
+    // 🎯 清除缓存，因为时间范围改变了
+    CacheManager.clear('snapshotData');
+    CacheManager.clear('portfolioData');
+    CacheManager.clear('statsData');
+    
     await loadAllData();
 };
 
@@ -260,6 +260,10 @@ window.submitEditAsset = async (event) => {
         if (res.ok) {
             console.log("✅ 资产数据更新成功");
             window.closeEditModal(); // 关闭弹窗
+            // 🎯 清除缓存以重新获取最新数据
+            CacheManager.clear('portfolioData');
+            CacheManager.clear('snapshotData');
+            CacheManager.clear('statsData');
             await loadAllData();     // 重新加载并渲染首页数据
         } else {
             const err = await res.json();
@@ -290,7 +294,14 @@ window.submitNewAsset = async (event) => {
         headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
         body: JSON.stringify({ source_name, token_name, coingecko_id, token_amount: parseFloat(token_amount), network, label })
     });
-    if (res.ok) { window.closeAddModal(); await loadAllData(); }
+    if (res.ok) { 
+        window.closeAddModal(); 
+        // 🎯 清除缓存以重新获取最新数据
+        CacheManager.clear('portfolioData');
+        CacheManager.clear('snapshotData');
+        CacheManager.clear('statsData');
+        await loadAllData(); 
+    }
     else { alert('添加失败'); }
 };
 
@@ -300,7 +311,13 @@ window.deleteAsset = async (id) => {
         method: 'DELETE',
         headers: { 'X-CSRF-TOKEN': getCsrfToken() }
     });
-    if (res.ok) await loadAllData();
+    if (res.ok) {
+        // 🎯 清除缓存以重新获取最新数据
+        CacheManager.clear('portfolioData');
+        CacheManager.clear('snapshotData');
+        CacheManager.clear('statsData');
+        await loadAllData();
+    }
 };
 
 window.submitWallet = async () => {
@@ -312,12 +329,19 @@ window.submitWallet = async () => {
         headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
         body: JSON.stringify({ name, type })
     });
-    if (res.ok) { document.getElementById('newWalletName').value = ''; loadWallets(); }
+    if (res.ok) { 
+        document.getElementById('newWalletName').value = ''; 
+        // 🎯 清除缓存
+        CacheManager.clear('wallets');
+        loadWallets(); 
+    }
 };
 
 window.deleteWallet = async (id) => {
     if (!confirm('确定删除此钱包？')) return;
     await fetch(`/api/wallets/${id}`, { method: 'DELETE', headers: { 'X-CSRF-TOKEN': getCsrfToken() } });
+    // 🎯 清除缓存
+    CacheManager.clear('wallets');
     loadWallets();
 };
 
@@ -337,9 +361,50 @@ window.changeMonth = function (offset) {
 // ==========================================
 // 4. 数据加载与同步
 // ==========================================
+
+/**
+ * 缓存管理工具类
+ */
+const CacheManager = {
+    set: (key, value) => {
+        try {
+            sessionStorage.setItem(key, JSON.stringify(value));
+        } catch (e) {
+            console.warn('❌ 缓存保存失败:', e);
+        }
+    },
+    get: (key) => {
+        try {
+            const item = sessionStorage.getItem(key);
+            return item ? JSON.parse(item) : null;
+        } catch (e) {
+            console.warn('❌ 缓存读取失败:', e);
+            return null;
+        }
+    },
+    clear: (key) => {
+        sessionStorage.removeItem(key);
+    }
+};
+
 async function loadAllData() {
+    // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
+    const cachedPortfolioData = CacheManager.get('portfolioData');
+    const cachedSnapshotData = CacheManager.get('snapshotData');
+    const cachedStats = CacheManager.get('statsData');
+
+    if (cachedPortfolioData && cachedSnapshotData && cachedStats) {
+        console.log('📦 使用缓存的投资组合数据');
+        globalPortfolioData = cachedPortfolioData;
+        globalSnapshotData = cachedSnapshotData;
+        globalStats = cachedStats;
+        renderPortfolio(globalPortfolioData);
+        renderChart(globalSnapshotData);
+        calculateROI(globalPortfolioData.value, globalStats);
+    }
+
+    // 🎯 第二步：后台更新数据
     try {
-        // 🎯 增加 fetch('/api/portfolio-stats')
         const [mapRes, snapRes, statRes] = await Promise.all([
             fetch('/api/assets/thinking-map').then(r => r.json()),
             fetch(`/api/assets/snapshots?range=${currentRange}`).then(r => r.json()),
@@ -352,6 +417,11 @@ async function loadAllData() {
         globalSnapshotData = snapRes;
         globalStats = statRes;
 
+        // 保存到缓存
+        CacheManager.set('portfolioData', mapRes);
+        CacheManager.set('snapshotData', snapRes);
+        CacheManager.set('statsData', statRes);
+
         renderPortfolio(globalPortfolioData);
         renderChart(globalSnapshotData);
 
@@ -360,7 +430,6 @@ async function loadAllData() {
     } catch (e) { 
         console.error("💥 数据加载失败:", e);
         console.error("🔍 请检查浏览器 Network 标签，看各 API 返回的数据");
-        // 不弹出 alert，让用户自己查看控制台
     }
 }
 
@@ -416,51 +485,118 @@ function calculateROI(currentValueUSD, stats) {
 }
 
 async function loadHistoryData() {
+    // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
+    const cachedHistoryData = CacheManager.get('historyData');
+    if (cachedHistoryData) {
+        console.log('📦 使用缓存的历史日历数据');
+        globalSnapshotData = cachedHistoryData;
+        renderCalendarHistory(globalSnapshotData);
+    }
+
+    // 🎯 第二步：后台更新数据
     try {
         const res = await fetch('/api/assets/snapshots?range=ALL');
-        globalSnapshotData = await res.json();
+        const data = await res.json();
+        globalSnapshotData = data;
+        CacheManager.set('historyData', data);
         renderCalendarHistory(globalSnapshotData);
-    } catch (e) { console.error("历史快照加载失败", e); }
+    } catch (e) { 
+        console.error("历史快照加载失败", e); 
+    }
 }
 
 async function loadTrackedTokens() {
-    const res = await fetch('/api/tracked-tokens');
-    const tokens = await res.json();
-    const list = document.getElementById('tracked-tokens-list');
-    if (!list) return;
+    // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
+    const cachedTokens = CacheManager.get('trackedTokens');
+    if (cachedTokens && Array.isArray(cachedTokens)) {
+        console.log('📦 使用缓存的追踪代币数据');
+        const list = document.getElementById('tracked-tokens-list');
+        if (list) {
+            list.innerHTML = cachedTokens.map(t => {
+                const rawId = (t._id && (t._id.$oid || t._id)) || t.id || t.coingecko_id;
+                const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+                return `
+                <tr class="hover:bg-slate-800/30">
+                    <td class="px-6 py-4 text-sm text-white">${t.name}</td>
+                    <td class="px-6 py-4 text-sm text-slate-500 font-mono">${t.coingecko_id}</td>
+                    <td class="px-6 py-4 text-right">
+                        <button onclick="window.deleteTrackedToken('${id}')" class="text-red-500">停止</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+    }
 
-    list.innerHTML = tokens.map(t => {
-        const rawId = (t._id && (t._id.$oid || t._id)) || t.id || t.coingecko_id;
-        const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
-        return `
-        <tr class="hover:bg-slate-800/30">
-            <td class="px-6 py-4 text-sm text-white">${t.name}</td>
-            <td class="px-6 py-4 text-sm text-slate-500 font-mono">${t.coingecko_id}</td>
-            <td class="px-6 py-4 text-right">
-                <button onclick="window.deleteTrackedToken('${id}')" class="text-red-500">停止</button>
-            </td>
-        </tr>`;
-    }).join('');
+    // 🎯 第二步：后台更新数据
+    try {
+        const res = await fetch('/api/tracked-tokens');
+        const tokens = await res.json();
+        CacheManager.set('trackedTokens', tokens);
+        const list = document.getElementById('tracked-tokens-list');
+        if (!list) return;
+
+        list.innerHTML = tokens.map(t => {
+            const rawId = (t._id && (t._id.$oid || t._id)) || t.id || t.coingecko_id;
+            const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+            return `
+            <tr class="hover:bg-slate-800/30">
+                <td class="px-6 py-4 text-sm text-white">${t.name}</td>
+                <td class="px-6 py-4 text-sm text-slate-500 font-mono">${t.coingecko_id}</td>
+                <td class="px-6 py-4 text-right">
+                    <button onclick="window.deleteTrackedToken('${id}')" class="text-red-500">停止</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error("追踪代币加载失败", e);
+    }
 }
 
 async function loadWallets() {
-    const res = await fetch('/api/wallets');
-    const wallets = await res.json();
-    const list = document.getElementById('wallets-list');
-    if (!list) return;
+    // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
+    const cachedWallets = CacheManager.get('wallets');
+    if (cachedWallets && Array.isArray(cachedWallets)) {
+        console.log('📦 使用缓存的钱包数据');
+        const list = document.getElementById('wallets-list');
+        if (list) {
+            list.innerHTML = cachedWallets.map(w => {
+                const rawId = (w._id && (w._id.$oid || w._id)) || w.id;
+                const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+                return `
+                <tr class="hover:bg-slate-800/30">
+                    <td class="px-6 py-4 text-sm text-white">${w.name}</td>
+                    <td class="px-6 py-4 text-sm text-slate-500">${w.type}</td>
+                    <td class="px-6 py-4 text-right">
+                        <button onclick="window.deleteWallet('${id}')" class="text-red-500">删除</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+    }
 
-    list.innerHTML = wallets.map(w => {
-        const rawId = (w._id && (w._id.$oid || w._id)) || w.id;
-        const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
-        return `
-        <tr class="hover:bg-slate-800/30">
-            <td class="px-6 py-4 text-sm text-white">${w.name}</td>
-            <td class="px-6 py-4 text-sm text-slate-500">${w.type}</td>
-            <td class="px-6 py-4 text-right">
-                <button onclick="window.deleteWallet('${id}')" class="text-red-500">删除</button>
-            </td>
-        </tr>`;
-    }).join('');
+    // 🎯 第二步：后台更新数据
+    try {
+        const res = await fetch('/api/wallets');
+        const wallets = await res.json();
+        CacheManager.set('wallets', wallets);
+        const list = document.getElementById('wallets-list');
+        if (!list) return;
+
+        list.innerHTML = wallets.map(w => {
+            const rawId = (w._id && (w._id.$oid || w._id)) || w.id;
+            const id = rawId && typeof rawId === 'object' ? (rawId.$oid || rawId.toString()) : rawId;
+            return `
+            <tr class="hover:bg-slate-800/30">
+                <td class="px-6 py-4 text-sm text-white">${w.name}</td>
+                <td class="px-6 py-4 text-sm text-slate-500">${w.type}</td>
+                <td class="px-6 py-4 text-right">
+                    <button onclick="window.deleteWallet('${id}')" class="text-red-500">删除</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error("钱包数据加载失败", e);
+    }
 }
 
 // ==========================================
@@ -770,7 +906,7 @@ function renderCalendarHistory(data) {
     if (!historyCalendarChart) historyCalendarChart = echarts.init(yearDom);
     if (!historyMonthChart) historyMonthChart = echarts.init(monthDom);
 
-    const calendarSeriesData = Array.isArray(data?.calendar) && data.calendar.length > 0 ? data.calendar : (() => {
+    let calendarSeriesData = Array.isArray(data?.calendar) && data.calendar.length > 0 ? data.calendar : (() => {
         const dailyDataMap = {};
         if (data && data.times && data.times.length > 0) {
             data.times.forEach((t, i) => {
@@ -806,6 +942,17 @@ function renderCalendarHistory(data) {
 
         return fallbackSeries;
     })();
+
+    // Apply currency conversion to calendar data if needed
+    if (isMYR) {
+        calendarSeriesData = calendarSeriesData.map(item => [
+            item[0],                    // date
+            item[1] * MYR_RATE,        // pnl (converted)
+            item[2],                    // pct (unchanged)
+            item[3] * MYR_RATE,        // dayClose (converted)
+            item[4]                     // hasData
+        ]);
+    }
 
     const currentYear = new Date().getFullYear();
 
@@ -1036,6 +1183,8 @@ window.submitTrackedToken = async () => {
             // 清空输入框
             document.getElementById('newTokenId').value = '';
             document.getElementById('search_tracked_input').value = '';
+            // 🎯 清除缓存
+            CacheManager.clear('trackedTokens');
             // 刷新列表
             loadTrackedTokens();
         } else {
@@ -1069,6 +1218,8 @@ window.deleteTrackedToken = async (id) => {
 
         if (res.ok) {
             console.log("🗑️ 已停止追踪");
+            // 🎯 清除缓存
+            CacheManager.clear('trackedTokens');
             loadTrackedTokens();
         }
     } catch (e) {

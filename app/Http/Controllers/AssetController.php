@@ -121,12 +121,13 @@ class AssetController extends Controller
         }
 
         $flows = CapitalFlow::orderBy('transaction_date', 'asc')->get();
-        $payload = $this->buildSnapshotSeries($snapshots, $flows, $range);
 
+        // For ALL range, only return calendar data; for other ranges, return time-series data
         if ($range === 'ALL') {
-            $payload['calendar'] = $this->buildCalendarSeries($snapshots, $flows);
+            return response()->json(['calendar' => $this->buildCalendarSeries($snapshots, $flows)]);
         }
 
+        $payload = $this->buildSnapshotSeries($snapshots, $flows, $range);
         return response()->json($payload);
     }
 
