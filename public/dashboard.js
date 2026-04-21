@@ -222,11 +222,7 @@ window.changeRange = async (range) => {
     btns.forEach(b => b.classList.toggle('bg-sky-500', b.innerText === range));
     btns.forEach(b => b.classList.toggle('text-white', b.innerText === range));
     
-    // 🎯 清除缓存，因为时间范围改变了
-    CacheManager.clear('snapshotData');
-    CacheManager.clear('portfolioData');
-    CacheManager.clear('statsData');
-    
+    // 🎯 不需要清除缓存，每个时间范围有独立的缓存键
     await loadAllData();
 };
 
@@ -260,9 +256,9 @@ window.submitEditAsset = async (event) => {
         if (res.ok) {
             console.log("✅ 资产数据更新成功");
             window.closeEditModal(); // 关闭弹窗
-            // 🎯 清除缓存以重新获取最新数据
+            // 🎯 清除所有缓存以重新获取最新数据
             CacheManager.clear('portfolioData');
-            CacheManager.clear('snapshotData');
+            CacheManager.clearAllSnapshotCache();
             CacheManager.clear('statsData');
             await loadAllData();     // 重新加载并渲染首页数据
         } else {
@@ -296,9 +292,9 @@ window.submitNewAsset = async (event) => {
     });
     if (res.ok) { 
         window.closeAddModal(); 
-        // 🎯 清除缓存以重新获取最新数据
+        // 🎯 清除所有缓存以重新获取最新数据
         CacheManager.clear('portfolioData');
-        CacheManager.clear('snapshotData');
+        CacheManager.clearAllSnapshotCache();
         CacheManager.clear('statsData');
         await loadAllData(); 
     }
@@ -312,9 +308,9 @@ window.deleteAsset = async (id) => {
         headers: { 'X-CSRF-TOKEN': getCsrfToken() }
     });
     if (res.ok) {
-        // 🎯 清除缓存以重新获取最新数据
+        // 🎯 清除所有缓存以重新获取最新数据
         CacheManager.clear('portfolioData');
-        CacheManager.clear('snapshotData');
+        CacheManager.clearAllSnapshotCache();
         CacheManager.clear('statsData');
         await loadAllData();
     }
@@ -384,17 +380,25 @@ const CacheManager = {
     },
     clear: (key) => {
         sessionStorage.removeItem(key);
+    },
+    // 🎯 新增：清除所有时间范围的快照缓存
+    clearAllSnapshotCache: () => {
+        ['1D', '7D', '30D', 'ALL'].forEach(range => {
+            CacheManager.clear(`snapshotData_${range}`);
+        });
     }
 };
 
 async function loadAllData() {
     // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
+    // 为每个时间范围使用独立的缓存键
+    const snapshotCacheKey = `snapshotData_${currentRange}`;
     const cachedPortfolioData = CacheManager.get('portfolioData');
-    const cachedSnapshotData = CacheManager.get('snapshotData');
+    const cachedSnapshotData = CacheManager.get(snapshotCacheKey);
     const cachedStats = CacheManager.get('statsData');
 
     if (cachedPortfolioData && cachedSnapshotData && cachedStats) {
-        console.log('📦 使用缓存的投资组合数据');
+        console.log(`📦 使用缓存的${currentRange}时间范围数据`);
         globalPortfolioData = cachedPortfolioData;
         globalSnapshotData = cachedSnapshotData;
         globalStats = cachedStats;
@@ -417,9 +421,9 @@ async function loadAllData() {
         globalSnapshotData = snapRes;
         globalStats = statRes;
 
-        // 保存到缓存
+        // 保存到缓存（使用时间范围特定的键）
         CacheManager.set('portfolioData', mapRes);
-        CacheManager.set('snapshotData', snapRes);
+        CacheManager.set(snapshotCacheKey, snapRes);
         CacheManager.set('statsData', statRes);
 
         renderPortfolio(globalPortfolioData);
@@ -486,7 +490,8 @@ function calculateROI(currentValueUSD, stats) {
 
 async function loadHistoryData() {
     // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）
-    const cachedHistoryData = CacheManager.get('historyData');
+    // 历史数据使用 ALL 范围的缓存键
+    const cachedHistoryData = CacheManager.get('snapshotData_ALL');
     if (cachedHistoryData) {
         console.log('📦 使用缓存的历史日历数据');
         globalSnapshotData = cachedHistoryData;
@@ -498,7 +503,7 @@ async function loadHistoryData() {
         const res = await fetch('/api/assets/snapshots?range=ALL');
         const data = await res.json();
         globalSnapshotData = data;
-        CacheManager.set('historyData', data);
+        CacheManager.set('snapshotData_ALL', data);
         renderCalendarHistory(globalSnapshotData);
     } catch (e) { 
         console.error("历史快照加载失败", e); 
