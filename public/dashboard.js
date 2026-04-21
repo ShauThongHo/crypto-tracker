@@ -54,6 +54,26 @@ function formatChartMoney(value) {
     });
 }
 
+function formatChartTimestamp(value, granularity = '5m', detailed = false) {
+    const date = new Date(value);
+    const pad = (number) => String(number).padStart(2, '0');
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+
+    if (granularity === 'day') {
+        return detailed ? `${year}-${month}-${day} 00:00` : `${month}-${day}`;
+    }
+
+    if (granularity === 'hour') {
+        return detailed ? `${year}-${month}-${day} ${hours}:00` : `${month}-${day} ${hours}:00`;
+    }
+
+    return detailed ? `${year}-${month}-${day} ${hours}:${minutes}` : `${hours}:${minutes}`;
+}
+
 /**
  * 获取最新汇率
  */
@@ -397,7 +417,7 @@ function calculateROI(currentValueUSD, stats) {
 
 async function loadHistoryData() {
     try {
-        const res = await fetch('/api/assets/snapshots?range=30D');
+        const res = await fetch('/api/assets/snapshots?range=ALL');
         globalSnapshotData = await res.json();
         renderCalendarHistory(globalSnapshotData);
     } catch (e) { console.error("历史快照加载失败", e); }
@@ -642,6 +662,7 @@ function renderChart(data) {
     const chartDom = document.getElementById('echarts-container');
     if (!myChart) myChart = echarts.init(chartDom);
 
+    const granularity = data.granularity || '5m';
     const assetData = data.times.map((t, i) => [t, isMYR ? data.values[i] * MYR_RATE : data.values[i]]);
     const investedData = data.times.map((t, i) => {
         const investedMYR = parseFloat(data.invested[i] || 0);
@@ -656,6 +677,13 @@ function renderChart(data) {
             backgroundColor: '#0f172a',
             borderColor: '#1e293b',
             textStyle: { color: '#fff' },
+            formatter: (params) => {
+                const point = params && params[0] ? params[0] : null;
+                if (!point) return '';
+                const timestamp = formatChartTimestamp(point.value[0], granularity, true);
+                const seriesRows = params.map(item => `<div class="flex justify-between gap-6"><span class="text-slate-400">${item.seriesName}</span><span class="font-mono">${formatChartMoney(item.value[1])}</span></div>`).join('');
+                return `<div class="font-bold mb-2">${timestamp}</div>${seriesRows}`;
+            },
             valueFormatter: (value) => formatChartMoney(value),
             // 增加指示线，方便对准
             axisPointer: {
@@ -663,7 +691,13 @@ function renderChart(data) {
                 lineStyle: { color: 'rgba(255, 255, 255, 0.1)', type: 'dashed' }
             }
         },
-        xAxis: { type: 'time', axisLabel: { color: '#64748b' } },
+        xAxis: {
+            type: 'time',
+            axisLabel: {
+                color: '#64748b',
+                formatter: (value) => formatChartTimestamp(value, granularity, false)
+            }
+        },
         yAxis: {
             type: 'value',
             scale: true,
@@ -736,42 +770,44 @@ function renderCalendarHistory(data) {
     if (!historyCalendarChart) historyCalendarChart = echarts.init(yearDom);
     if (!historyMonthChart) historyMonthChart = echarts.init(monthDom);
 
-    // 1. 数据按天分组
-    const dailyDataMap = {};
-    if (data && data.times && data.times.length > 0) {
-        data.times.forEach((t, i) => {
-            const d = new Date(t);
-            const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            if (!dailyDataMap[ds]) dailyDataMap[ds] = [];
-            dailyDataMap[ds].push(isMYR ? data.values[i] * MYR_RATE : data.values[i]);
-        });
-    }
-
-    // 2. 补全计算逻辑：继承前一日收盘价 (让计算不中断)
-    const calendarSeriesData = [];
-    let previousDayClose = null;
-    const currentYear = new Date().getFullYear();
-    const startDate = new Date(currentYear, 0, 1);
-    const today = new Date();
-
-    for (let d = new Date(startDate); d <= today; d.setDate(d.getDate() + 1)) {
-        const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-        if (dailyDataMap[ds]) {
-            const values = dailyDataMap[ds];
-            // 盈亏 = 今天的最后一点 - (昨天的最后一点 或 今天的最初一点)
-            const dayOpen = previousDayClose !== null ? previousDayClose : values[0];
-            const dayClose = values[values.length - 1];
-            const pnl = dayClose - dayOpen;
-            const pct = dayOpen === 0 ? 0 : (pnl / dayOpen) * 100;
-
-            calendarSeriesData.push([ds, pnl, pct, dayClose, true]);
-            previousDayClose = dayClose;
-        } else {
-            // 无数据日：盈亏设为 0，继承资产，标记为 false
-            calendarSeriesData.push([ds, 0, 0, previousDayClose || 0, false]);
+    const calendarSeriesData = Array.isArray(data?.calendar) && data.calendar.length > 0 ? data.calendar : (() => {
+        const dailyDataMap = {};
+        if (data && data.times && data.times.length > 0) {
+            data.times.forEach((t, i) => {
+                const d = new Date(t);
+                const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                if (!dailyDataMap[ds]) dailyDataMap[ds] = [];
+                dailyDataMap[ds].push(isMYR ? data.values[i] * MYR_RATE : data.values[i]);
+            });
         }
-    }
+
+        const fallbackSeries = [];
+        let previousDayClose = null;
+        const currentYear = new Date().getFullYear();
+        const startDate = new Date(currentYear, 0, 1);
+        const today = new Date();
+
+        for (let d = new Date(startDate); d <= today; d.setDate(d.getDate() + 1)) {
+            const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+            if (dailyDataMap[ds]) {
+                const values = dailyDataMap[ds];
+                const dayOpen = previousDayClose !== null ? previousDayClose : values[0];
+                const dayClose = values[values.length - 1];
+                const pnl = dayClose - dayOpen;
+                const pct = dayOpen === 0 ? 0 : (pnl / dayOpen) * 100;
+
+                fallbackSeries.push([ds, pnl, pct, dayClose, true]);
+                previousDayClose = dayClose;
+            } else {
+                fallbackSeries.push([ds, 0, 0, previousDayClose || 0, false]);
+            }
+        }
+
+        return fallbackSeries;
+    })();
+
+    const currentYear = new Date().getFullYear();
 
     // --- 提取公共 Tooltip ---
     const commonTooltip = {

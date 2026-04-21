@@ -105,43 +105,194 @@ class AssetController extends Controller
      */
     public function getSnapshots(Request $request)
     {
-        $range = $request->query('range', '1D');
-        $query = DB::table('asset_snapshots');
+        $range = strtoupper((string) $request->query('range', '1D'));
+        $now = Carbon::now();
+        $query = DB::table('asset_snapshots')->orderBy('snapshot_time', 'asc');
 
-        $days = ['1D' => 1, '7D' => 7, '30D' => 30];
-        $since = now()->subDays($days[$range] ?? 1);
+        if ($range === '7D') {
+            $snapshots = $query->where('snapshot_time', '>=', $now->copy()->subDays(7)->startOfHour())->get();
+        } elseif ($range === '30D') {
+            $snapshots = $query->where('snapshot_time', '>=', $now->copy()->subDays(30)->startOfDay())->get();
+        } elseif ($range === 'ALL') {
+            $snapshots = $query->get();
+        } else {
+            $snapshots = $query->where('snapshot_time', '>=', $now->copy()->subDay())->get();
+            $range = '1D';
+        }
 
-        $snapshots = $query->where('snapshot_time', '>=', $since)->orderBy('snapshot_time', 'asc')->get();
-
-        // 🎯 核心修复：使用 CapitalFlow 模型查询 MongoDB 中的流水数据，而不是空的 SQL 表
         $flows = CapitalFlow::orderBy('transaction_date', 'asc')->get();
+        $payload = $this->buildSnapshotSeries($snapshots, $flows, $range);
+
+        if ($range === 'ALL') {
+            $payload['calendar'] = $this->buildCalendarSeries($snapshots, $flows);
+        }
+
+        return response()->json($payload);
+    }
+
+    private function buildSnapshotSeries($snapshots, $flows, string $range): array
+    {
+        $normalizedSnapshots = collect($snapshots)
+            ->map(function ($snap) {
+                return [
+                    'time' => Carbon::parse($snap->snapshot_time)->setTimezone('Asia/Kuala_Lumpur'),
+                    'value' => (float) ($snap->total_value_usd ?? 0),
+                ];
+            })
+            ->values();
+
+        if ($normalizedSnapshots->isEmpty()) {
+            return [
+                'times' => [],
+                'values' => [],
+                'invested' => [],
+                'count' => 0,
+                'granularity' => '5m',
+            ];
+        }
+
+        $normalizedFlows = collect($flows)
+            ->map(function ($flow) {
+                return [
+                    'time' => Carbon::parse($flow->transaction_date)->setTimezone('Asia/Kuala_Lumpur')->startOfDay(),
+                    'amount' => (float) ($flow->fiat_amount ?? 0),
+                    'direction' => $flow->type,
+                ];
+            })
+            ->sortBy('time')
+            ->values();
+
+        $bucketTimes = [];
+        $granularity = '5m';
+        $now = Carbon::now();
+
+        if ($range === '7D') {
+            $granularity = 'hour';
+            $cursor = $now->copy()->subDays(7)->startOfHour();
+            while ($cursor->lte($now)) {
+                $bucketTimes[] = $cursor->copy()->minute(0)->second(0);
+                $cursor->addHour();
+            }
+        } elseif ($range === '30D' || $range === 'ALL') {
+            $granularity = 'day';
+            $start = $range === 'ALL'
+                ? $normalizedSnapshots->first()['time']->copy()->startOfDay()
+                : $now->copy()->subDays(30)->startOfDay();
+            $cursor = $start;
+            while ($cursor->lte($now)) {
+                $bucketTimes[] = $cursor->copy()->hour(0)->minute(0)->second(0);
+                $cursor->addDay();
+            }
+        } else {
+            $bucketTimes = $normalizedSnapshots->pluck('time')->all();
+        }
 
         $times = [];
         $values = [];
         $invested = [];
+        $snapshotIndex = 0;
+        $flowIndex = 0;
+        $latestSnapshot = null;
+        $netInvested = 0;
+        $snapshotCount = $normalizedSnapshots->count();
+        $flowCount = $normalizedFlows->count();
 
-        foreach ($snapshots as $snap) {
-            $carbonTime = Carbon::parse($snap->snapshot_time);
-            $times[] = $carbonTime->setTimezone('Asia/Kuala_Lumpur')->format('Y-m-d H:i:s');
-            $values[] = round((float) $snap->total_value_usd, 2);
+        foreach ($bucketTimes as $bucketTime) {
+            while ($snapshotIndex < $snapshotCount && $normalizedSnapshots[$snapshotIndex]['time']->lte($bucketTime)) {
+                $latestSnapshot = $normalizedSnapshots[$snapshotIndex];
+                $snapshotIndex++;
+            }
 
-            // 核心逻辑：计算在这个快照时间点之前的“净投入本金”
-            $netInvestedAtPoint = $flows->filter(function ($f) use ($carbonTime) {
-                return Carbon::parse($f->transaction_date)->endOfDay() <= $carbonTime->endOfDay();
-            })->sum(function ($f) {
-                $amount = (float) ($f->fiat_amount ?? 0);
-                return $f->type === 'DEPOSIT' ? $amount : -$amount;
-            });
+            while ($flowIndex < $flowCount && $normalizedFlows[$flowIndex]['time']->lte($bucketTime)) {
+                $flow = $normalizedFlows[$flowIndex];
+                $netInvested += $flow['direction'] === 'DEPOSIT' ? $flow['amount'] : -$flow['amount'];
+                $flowIndex++;
+            }
 
-            $invested[] = round((float) $netInvestedAtPoint, 2);
+            if (!$latestSnapshot) {
+                continue;
+            }
+
+            $times[] = $bucketTime->copy()->format('Y-m-d H:i:s');
+            $values[] = round($latestSnapshot['value'], 2);
+            $invested[] = round($netInvested, 2);
         }
 
-        return response()->json([
+        return [
             'times' => $times,
             'values' => $values,
-            'invested' => $invested, // 🎯 吐出本金水位线数据
-            'count' => count($times)
-        ]);
+            'invested' => $invested,
+            'count' => count($times),
+            'granularity' => $granularity,
+        ];
+    }
+
+    private function buildCalendarSeries($snapshots, $flows): array
+    {
+        $timeZone = 'Asia/Kuala_Lumpur';
+        $normalizedSnapshots = collect($snapshots)
+            ->map(function ($snap) use ($timeZone) {
+                return [
+                    'time' => Carbon::parse($snap->snapshot_time)->setTimezone($timeZone),
+                    'value' => (float) ($snap->total_value_usd ?? 0),
+                ];
+            })
+            ->sortBy('time')
+            ->values();
+
+        $normalizedFlows = collect($flows)
+            ->map(function ($flow) use ($timeZone) {
+                $flowAmount = (float) ($flow->usdt_amount ?? 0);
+                if ($flowAmount <= 0 && isset($flow->fiat_amount, $flow->usdt_rate) && (float) $flow->usdt_rate > 0) {
+                    $flowAmount = (float) $flow->fiat_amount / (float) $flow->usdt_rate;
+                }
+
+                return [
+                    'date' => Carbon::parse($flow->transaction_date)->setTimezone($timeZone)->toDateString(),
+                    'amount' => $flowAmount,
+                    'direction' => $flow->type,
+                ];
+            })
+            ->groupBy('date');
+
+        $today = Carbon::now($timeZone)->startOfDay();
+        $startDate = Carbon::create($today->year, 1, 1, 0, 0, 0, $timeZone);
+        $calendarSeries = [];
+        $previousClose = null;
+
+        for ($cursor = $startDate->copy(); $cursor->lte($today); $cursor->addDay()) {
+            $dateStr = $cursor->toDateString();
+            $dayStart = $cursor->copy()->startOfDay();
+            $dayEnd = $cursor->copy()->startOfDay()->addDay()->subMinutes(5);
+
+            $openSnapshot = $normalizedSnapshots->filter(function ($snap) use ($dayStart) {
+                return $snap['time']->lte($dayStart);
+            })->last();
+
+            $closeSnapshot = $normalizedSnapshots->filter(function ($snap) use ($dayEnd) {
+                return $snap['time']->lte($dayEnd);
+            })->last();
+
+            $flowsForDay = $normalizedFlows->get($dateStr, collect());
+            $netFlow = collect($flowsForDay)->sum(function ($flow) {
+                return $flow['direction'] === 'DEPOSIT' ? $flow['amount'] : -$flow['amount'];
+            });
+
+            if (!$closeSnapshot) {
+                $calendarSeries[] = [$dateStr, 0, 0, $previousClose ?? 0, false];
+                continue;
+            }
+
+            $dayClose = (float) $closeSnapshot['value'];
+            $dayOpen = $openSnapshot ? (float) $openSnapshot['value'] : ($previousClose !== null ? (float) $previousClose : $dayClose);
+            $dailyPnl = $dayClose - $dayOpen - $netFlow;
+            $dailyPct = $dayOpen === 0.0 ? 0 : ($dailyPnl / $dayOpen) * 100;
+
+            $calendarSeries[] = [$dateStr, round($dailyPnl, 2), round($dailyPct, 2), round($dayClose, 2), true];
+            $previousClose = $dayClose;
+        }
+
+        return $calendarSeries;
     }
 
     // =========================================================================
