@@ -95,6 +95,34 @@
                 </div>
             </div>
 
+            <div>
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-bold text-white">🏷️ 类别管理</h3>
+                    <button type="button" onclick="document.getElementById('addCategoryRow').classList.toggle('hidden')"
+                        class="text-xs bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 px-4 py-2 rounded-lg">+
+                        新增类别</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-3">币种分配已移到首页的 Category Allocation 卡片中进行（支持拖拽）。</p>
+                <div class="bg-[#0f172a] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-800/50 text-slate-500 text-[10px] uppercase font-bold tracking-wider">
+                            <tr>
+                                <th class="px-6 py-4">类别名称</th>
+                                <th class="px-6 py-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="asset-categories-list" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                    <div id="addCategoryRow" class="hidden p-6 bg-slate-800/30 border-t border-slate-700">
+                        <div class="flex gap-4">
+                            <input type="text" id="newCategoryName" placeholder="例如: 激进 / 稳健 / 现货"
+                                class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <button type="button" onclick="submitCategory()" class="bg-sky-500 text-white px-6 py-2 rounded-xl">保存类别</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="mt-20 border-t border-red-900/30 pt-10">
                 <h3 class="text-red-500 text-xl font-bold mb-6 flex items-center gap-2">危险区域 (Danger Zone)</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">

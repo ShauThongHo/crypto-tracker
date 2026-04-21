@@ -36,6 +36,10 @@ Route::get('/settings', function () {
 
 Route::prefix('api')->group(function () {
     Route::get('/assets/thinking-map', [AssetController::class, 'getAssetThinkingMap']);
+    Route::get('/asset-categories', [AssetController::class, 'getAssetCategories']);
+    Route::post('/asset-categories', [AssetController::class, 'storeAssetCategory']);
+    Route::put('/asset-categories/{id}', [AssetController::class, 'updateAssetCategory']);
+    Route::delete('/asset-categories/{id}', [AssetController::class, 'deleteAssetCategory']);
     Route::get('/assets/snapshots', [AssetController::class, 'getSnapshots']);
     Route::get('/sync-status', [AssetController::class, 'getSyncStatus']);
     Route::get('/exchange-rate', [AssetController::class, 'getExchangeRate']);

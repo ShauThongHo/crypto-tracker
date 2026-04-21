@@ -10,6 +10,7 @@ let MYR_RATE = 4.2;
 let globalPortfolioData = null;
 let globalSnapshotData = null;
 let globalStats = null;
+let globalCategories = null;
 let myChart = null;
 let historyCalendarChart = null;
 let historyMonthChart = null;
@@ -18,6 +19,7 @@ let lastKnownSync = null;
 let currentViewMonthDate = new Date();
 let trackedSearchTimer = null;
 let currentBreakdownView = 'wallets';
+let categoryDragContext = null;
 
 // CSRF Token 工具函数
 const getCsrfToken = () => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -108,6 +110,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     Promise.all([
         loadAllData().catch(e => console.error("投资组合数据加载失败:", e)),
         loadHistoryData().catch(e => console.error("历史日历数据加载失败:", e)),
+        loadCategories().catch(e => console.error("类别数据加载失败:", e)),
         loadTrackedTokens().catch(e => console.error("追踪代币加载失败:", e)),
         loadWallets().catch(e => console.error("钱包加载失败:", e))
     ]).then(() => {
@@ -604,6 +607,338 @@ async function loadWallets() {
     }
 }
 
+function normalizeCategoryId(raw) {
+    if (!raw) return '';
+    if (typeof raw === 'string' || typeof raw === 'number') return String(raw);
+    if (typeof raw === 'object') {
+        if (raw.id) return String(raw.id);
+        if (raw.$oid) return String(raw.$oid);
+        if (raw._id) return normalizeCategoryId(raw._id);
+        if (typeof raw.toString === 'function' && raw.toString !== Object.prototype.toString) {
+            return String(raw.toString());
+        }
+    }
+    return '';
+}
+
+function normalizeSymbolList(text) {
+    return String(text || '')
+        .split(',')
+        .map(s => s.trim().toUpperCase())
+        .filter(Boolean)
+        .filter((symbol, index, arr) => arr.indexOf(symbol) === index);
+}
+
+function renderCategorySettingsList(categories) {
+    const list = document.getElementById('asset-categories-list');
+    if (!list) return;
+
+    if (!categories || categories.length === 0) {
+        list.innerHTML = `
+            <tr>
+                <td colspan="2" class="px-6 py-6 text-center text-slate-500 text-sm">暂无类别，请先创建一个类别</td>
+            </tr>`;
+        return;
+    }
+
+    list.innerHTML = categories.map((category) => {
+        const name = category.name || '';
+        const id = normalizeCategoryId(category.id || category._id);
+        const encodedId = encodeURIComponent(id);
+        return `
+            <tr class="hover:bg-slate-800/30">
+                <td class="px-6 py-4 text-sm text-white">${name}</td>
+                <td class="px-6 py-4 text-right">
+                    <button type="button" onclick="window.deleteCategory(decodeURIComponent('${encodedId}'))" class="text-red-500">删除</button>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+function syncCategoryControls() {
+    renderCategorySettingsList(globalCategories || []);
+}
+
+async function loadCategories() {
+    const cachedCategories = CacheManager.get('assetCategories');
+    if (cachedCategories && Array.isArray(cachedCategories)) {
+        globalCategories = cachedCategories;
+        syncCategoryControls();
+    }
+
+    try {
+        const res = await fetch('/api/asset-categories');
+        const categories = await res.json();
+        globalCategories = categories;
+        CacheManager.set('assetCategories', categories);
+        syncCategoryControls();
+
+        if (globalPortfolioData && currentBreakdownView === 'categories') {
+            renderPortfolio(globalPortfolioData);
+        }
+    } catch (e) {
+        console.error('类别数据加载失败', e);
+    }
+}
+
+window.submitCategory = async () => {
+    const input = document.getElementById('newCategoryName') || document.getElementById('category-name-dashboard');
+    const name = input ? input.value.trim() : '';
+    if (!name) return alert('请输入类别名称');
+
+    try {
+        const res = await fetch('/api/asset-categories', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': getCsrfToken()
+            },
+            body: JSON.stringify({ name })
+        });
+
+        if (res.ok) {
+            if (input) input.value = '';
+            CacheManager.clear('assetCategories');
+            await loadCategories();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            alert(err.message || '创建类别失败');
+        }
+    } catch (e) {
+        console.error('创建类别失败', e);
+        alert('创建类别失败');
+    }
+};
+
+function getCategoryById(categoryId) {
+    const normalizedId = normalizeCategoryId(categoryId);
+    if (!normalizedId) return null;
+    return (globalCategories || []).find((category) => {
+        return normalizeCategoryId(category.id || category._id) === normalizedId;
+    }) || null;
+}
+
+function getPortfolioSymbols(data) {
+    const symbolSet = new Set();
+    (data?.children || []).forEach((source) => {
+        (source.children || []).forEach((net) => {
+            (net.children || []).forEach((token) => {
+                const symbol = String(token.symbol || token.name || '').trim().toUpperCase();
+                if (symbol) symbolSet.add(symbol);
+            });
+        });
+    });
+    return Array.from(symbolSet.values()).sort();
+}
+
+function getUncategorizedSymbols(data) {
+    const allSymbols = getPortfolioSymbols(data);
+    const assignedSymbols = new Set();
+
+    (globalCategories || []).forEach((category) => {
+        (Array.isArray(category.symbols) ? category.symbols : []).forEach((symbol) => {
+            const normalized = String(symbol || '').trim().toUpperCase();
+            if (normalized) assignedSymbols.add(normalized);
+        });
+    });
+
+    return allSymbols.filter((symbol) => !assignedSymbols.has(symbol));
+}
+
+async function updateCategorySymbols(categoryId, symbols) {
+    const normalizedId = normalizeCategoryId(categoryId);
+    if (!normalizedId) {
+        alert('保存失败：无效的类别 ID');
+        return;
+    }
+
+    const normalizedSymbols = normalizeSymbolList(Array.isArray(symbols) ? symbols.join(',') : symbols);
+
+    try {
+        const res = await fetch(`/api/asset-categories/${encodeURIComponent(normalizedId)}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': getCsrfToken()
+            },
+            body: JSON.stringify({ symbols: normalizedSymbols })
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(err.message || '保存币种失败');
+            return;
+        }
+
+        const target = getCategoryById(normalizedId);
+        if (target) {
+            target.symbols = normalizedSymbols;
+        }
+
+        CacheManager.set('assetCategories', globalCategories || []);
+        syncCategoryControls();
+        if (globalPortfolioData && currentBreakdownView === 'categories') {
+            renderPortfolio(globalPortfolioData);
+        }
+    } catch (e) {
+        console.error('保存币种失败', e);
+        alert('保存币种失败');
+    }
+}
+
+window.saveCategorySymbols = async (id, inputId) => {
+    const input = document.getElementById(inputId);
+    const symbols = normalizeSymbolList(input ? input.value : '');
+    await updateCategorySymbols(id, symbols);
+};
+
+window.addSymbolToCategoryByInput = async (id, inputId) => {
+    const category = getCategoryById(id);
+    const input = document.getElementById(inputId);
+    const symbol = String(input?.value || '').trim().toUpperCase();
+    if (!category || !symbol) return;
+    const nextSymbols = Array.isArray(category.symbols) ? [...category.symbols] : [];
+    if (!nextSymbols.includes(symbol)) {
+        nextSymbols.push(symbol);
+    }
+    await updateCategorySymbols(id, nextSymbols);
+    if (input) input.value = '';
+};
+
+window.removeSymbolFromCategory = async (id, symbol) => {
+    const category = getCategoryById(id);
+    if (!category) return;
+    const nextSymbols = (Array.isArray(category.symbols) ? category.symbols : []).filter((s) => s !== symbol);
+    await updateCategorySymbols(id, nextSymbols);
+};
+
+window.onCategorySymbolDragStart = (event, symbol) => {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    categoryDragContext = {
+        symbol: normalizedSymbol,
+        sourceCategoryId: ''
+    };
+    if (!event || !event.dataTransfer) return;
+    event.dataTransfer.setData('text/plain', normalizedSymbol);
+    event.dataTransfer.setData('application/x-source-category-id', '');
+    event.dataTransfer.effectAllowed = 'copy';
+    event.target && event.target.addEventListener('dragend', () => { categoryDragContext = null; }, { once: true });
+};
+
+window.onCategoryTagDragStart = (event, symbol, sourceCategoryId) => {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    const normalizedSourceCategoryId = String(sourceCategoryId || '');
+    categoryDragContext = {
+        symbol: normalizedSymbol,
+        sourceCategoryId: normalizedSourceCategoryId
+    };
+    if (!event || !event.dataTransfer) return;
+    event.dataTransfer.setData('text/plain', normalizedSymbol);
+    event.dataTransfer.setData('application/x-source-category-id', normalizedSourceCategoryId);
+    event.dataTransfer.effectAllowed = 'move';
+    event.target && event.target.addEventListener('dragend', () => { categoryDragContext = null; }, { once: true });
+};
+
+window.onCategoryDragOver = (event) => {
+    if (!event) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+        const sourceCategoryId = String(
+            event.dataTransfer.getData('application/x-source-category-id') ||
+            categoryDragContext?.sourceCategoryId ||
+            ''
+        );
+
+        // Dragging from a category tag means "move"; dragging from pool means "copy"
+        event.dataTransfer.dropEffect = sourceCategoryId ? 'move' : 'copy';
+    }
+};
+
+async function moveSymbolBetweenCategories(sourceCategoryId, targetCategoryId, symbol) {
+    const sourceId = normalizeCategoryId(sourceCategoryId);
+    const targetId = normalizeCategoryId(targetCategoryId);
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    if (!normalizedSymbol || !targetId) return;
+
+    if (!sourceId) {
+        const targetCategory = getCategoryById(targetId);
+        if (!targetCategory) return;
+        const nextSymbols = Array.isArray(targetCategory.symbols) ? [...targetCategory.symbols] : [];
+        if (!nextSymbols.includes(normalizedSymbol)) {
+            nextSymbols.push(normalizedSymbol);
+            await updateCategorySymbols(targetId, nextSymbols);
+        }
+        return;
+    }
+
+    if (sourceId === targetId) return;
+
+    const sourceCategory = getCategoryById(sourceId);
+    const targetCategory = getCategoryById(targetId);
+    if (!sourceCategory || !targetCategory) return;
+
+    const sourceSymbols = (Array.isArray(sourceCategory.symbols) ? sourceCategory.symbols : []).filter((s) => s !== normalizedSymbol);
+    const targetSymbols = Array.isArray(targetCategory.symbols) ? [...targetCategory.symbols] : [];
+    if (!targetSymbols.includes(normalizedSymbol)) {
+        targetSymbols.push(normalizedSymbol);
+    }
+
+    await updateCategorySymbols(sourceId, sourceSymbols);
+    await updateCategorySymbols(targetId, targetSymbols);
+}
+
+window.onCategoryDrop = async (event, id) => {
+    if (!event) return;
+    event.preventDefault();
+    const symbol = String(event.dataTransfer?.getData('text/plain') || categoryDragContext?.symbol || '').trim().toUpperCase();
+    const sourceCategoryId = String(event.dataTransfer?.getData('application/x-source-category-id') || categoryDragContext?.sourceCategoryId || '');
+    if (!symbol) return;
+    await moveSymbolBetweenCategories(sourceCategoryId, id, symbol);
+    categoryDragContext = null;
+};
+
+window.onPoolDrop = async (event) => {
+    if (!event) return;
+    event.preventDefault();
+    const symbol = String(event.dataTransfer?.getData('text/plain') || categoryDragContext?.symbol || '').trim().toUpperCase();
+    const sourceCategoryId = String(event.dataTransfer?.getData('application/x-source-category-id') || categoryDragContext?.sourceCategoryId || '');
+    if (!symbol || !sourceCategoryId) return;
+
+    const sourceCategory = getCategoryById(sourceCategoryId);
+    if (!sourceCategory) return;
+    const sourceSymbols = (Array.isArray(sourceCategory.symbols) ? sourceCategory.symbols : []).filter((s) => s !== symbol);
+    await updateCategorySymbols(sourceCategoryId, sourceSymbols);
+    categoryDragContext = null;
+};
+
+window.deleteCategory = async (id) => {
+    if (!confirm('确定删除这个类别吗？该类别下的资产会变为未分类。')) return;
+
+    const categoryId = normalizeCategoryId(id);
+    if (!categoryId) {
+        console.error('删除类别失败: 无效的类别 ID', id);
+        alert('删除类别失败：无效的类别 ID');
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/asset-categories/${encodeURIComponent(categoryId)}`, {
+            method: 'DELETE',
+            headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+        });
+
+        if (res.ok) {
+            CacheManager.clear('assetCategories');
+            await loadCategories();
+            await loadAllData();
+        }
+    } catch (e) {
+        console.error('删除类别失败', e);
+    }
+};
+
 // ==========================================
 // 5. 绘图与渲染引擎
 // ==========================================
@@ -621,11 +956,12 @@ function renderPortfolio(data) {
         <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
                 <h3 class="text-white text-xl font-semibold tracking-tight">Portfolio Breakdown</h3>
-                <p class="text-slate-400 text-xs md:text-sm mt-1">选择更适合当前分析的视图：钱包便当盒或资产占比表。</p>
+                <p class="text-slate-400 text-xs md:text-sm mt-1">选择更适合当前分析的视图：钱包便当盒、资产占比表或类别占比表。</p>
             </div>
             <div class="inline-flex bg-slate-900/80 border border-slate-700 rounded-2xl p-1.5 self-start md:self-auto shadow-lg">
                 <button id="breakdown-wallets-btn" onclick="window.switchBreakdownView('wallets')" class="px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all">钱包视图</button>
                 <button id="breakdown-assets-btn" onclick="window.switchBreakdownView('assets')" class="px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all">资产占比</button>
+                <button id="breakdown-categories-btn" onclick="window.switchBreakdownView('categories')" class="px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all">类别占比</button>
             </div>
         </div>`;
     container.appendChild(switchCard);
@@ -636,6 +972,14 @@ function renderPortfolio(data) {
         assetCard.className = 'bento-card full-row-card';
         assetCard.innerHTML = buildAssetAllocationCard(data);
         container.appendChild(assetCard);
+        return;
+    }
+
+    if (currentBreakdownView === 'categories') {
+        const categoryCard = document.createElement('div');
+        categoryCard.className = 'bento-card full-row-card';
+        categoryCard.innerHTML = buildCategoryAllocationCard(data);
+        container.appendChild(categoryCard);
         return;
     }
 
@@ -693,7 +1037,8 @@ function renderPortfolio(data) {
 function updateBreakdownToggleUI() {
     const walletsBtn = document.getElementById('breakdown-wallets-btn');
     const assetsBtn = document.getElementById('breakdown-assets-btn');
-    if (!walletsBtn || !assetsBtn) return;
+    const categoriesBtn = document.getElementById('breakdown-categories-btn');
+    if (!walletsBtn || !assetsBtn || !categoriesBtn) return;
 
     const activate = (btn) => {
         btn.classList.add('bg-sky-500', 'text-white', 'shadow-lg', 'shadow-sky-500/25');
@@ -707,9 +1052,15 @@ function updateBreakdownToggleUI() {
     if (currentBreakdownView === 'assets') {
         deactivate(walletsBtn);
         activate(assetsBtn);
+        deactivate(categoriesBtn);
+    } else if (currentBreakdownView === 'categories') {
+        deactivate(walletsBtn);
+        deactivate(assetsBtn);
+        activate(categoriesBtn);
     } else {
         activate(walletsBtn);
         deactivate(assetsBtn);
+        deactivate(categoriesBtn);
     }
 }
 
@@ -764,6 +1115,92 @@ function buildAssetAllocationCard(data) {
         </div>`;
 }
 
+function buildCategoryAllocationCard(data) {
+    const allocations = calculateCategoryAllocations(data);
+    const uncategorizedSymbols = getUncategorizedSymbols(data);
+    if (allocations.length === 0) {
+        return `
+            <div class="text-center py-12">
+                <div class="text-slate-400 text-sm">暂无类别可用于占比分析</div>
+            </div>`;
+    }
+
+    const topValue = allocations[0].value || 0;
+    const rows = allocations.map((item, index) => {
+        const barWidth = topValue > 0 ? Math.max(2, Math.round((item.value / topValue) * 100)) : 0;
+        const symbolPreview = item.symbols.length > 0 ? item.symbols.slice(0, 4).join(', ') : '尚未分配币种';
+        const overflowText = item.symbols.length > 4 ? ` 等 ${item.symbols.length} 个币种` : '';
+        const canManage = item.manageable === true;
+        const encodedId = encodeURIComponent(item.id || '');
+        const symbolTags = (item.symbols || []).map((symbol) => {
+            const encodedSymbol = encodeURIComponent(symbol);
+            return canManage
+                ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-[11px] text-slate-200" draggable="true" ondragstart="window.onCategoryTagDragStart(event, decodeURIComponent('${encodedSymbol}'), decodeURIComponent('${encodedId}'))">${symbol}<button type="button" onclick="window.removeSymbolFromCategory(decodeURIComponent('${encodedId}'), decodeURIComponent('${encodedSymbol}'))" class="text-rose-400">x</button></span>`
+                : `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-[11px] text-slate-200">${symbol}</span>`;
+        }).join('');
+        return `
+            <div class="py-3 px-3 rounded-2xl border border-slate-800/70 bg-slate-900/45 hover:border-sky-500/40 transition-all"
+                ondragover="window.onCategoryDragOver(event)"
+                ondrop="window.onCategoryDrop(event, decodeURIComponent('${encodedId}'))">
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <span class="h-2.5 w-2.5 rounded-full shrink-0" style="background:${item.color}"></span>
+                        <div class="min-w-0">
+                            <div class="text-white text-sm font-semibold truncate">${item.name}</div>
+                            <div class="text-[11px] text-slate-500 truncate">包含: ${symbolPreview}${overflowText}</div>
+                        </div>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="text-white text-sm font-semibold">${formatMoney(item.value)}</div>
+                        <div class="text-[11px] font-bold" style="color:${item.color}">${item.percentage.toFixed(2)}%</div>
+                    </div>
+                </div>
+                <div class="mt-2.5 h-2.5 rounded-full bg-slate-800/90 overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" style="width:${barWidth}%; background:linear-gradient(90deg, ${item.color} 0%, rgba(255,255,255,0.95) 55%, ${item.color} 100%);"></div>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 uppercase tracking-widest">${item.count} 个持仓</div>
+                <div class="mt-3 flex flex-wrap gap-2">${symbolTags || '<span class="text-[11px] text-slate-500">暂无币种</span>'}</div>
+                ${canManage ? `<div class="mt-3 text-[11px] text-slate-500">将币种直接拖到这个类别卡片即可</div>` : ''}
+            </div>`;
+    }).join('');
+
+    const draggablePool = uncategorizedSymbols.map((symbol) => {
+        const encodedSymbol = encodeURIComponent(symbol);
+        return `<button type="button"
+            draggable="true"
+            ondragstart="window.onCategorySymbolDragStart(event, decodeURIComponent('${encodedSymbol}'))"
+            class="px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-[11px] text-slate-200 hover:border-sky-500">
+            ${symbol}
+        </button>`;
+    }).join('');
+
+    return `
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3 pb-4 border-b border-slate-800">
+            <div>
+                <h3 class="text-white text-xl font-semibold tracking-tight">Category Allocation</h3>
+                <p class="text-slate-400 text-xs md:text-sm mt-1">按你创建的类别汇总币种总占比，例如“激进”类别中的 BTC、CRO 会自动合并计算。</p>
+            </div>
+            <div class="inline-flex items-center gap-2 bg-slate-900/70 border border-slate-700 rounded-xl px-3 py-2">
+                <span class="text-[10px] text-slate-500 uppercase tracking-widest">Total</span>
+                <span class="text-white text-sm font-semibold">${formatMoney(data.value || 0)}</span>
+            </div>
+        </div>
+        <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input id="category-name-dashboard" type="text" placeholder="新增类别，例如 激进"
+                class="md:col-span-2 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm">
+            <button type="button" onclick="window.submitCategory()" class="bg-sky-500 hover:bg-sky-400 text-white rounded-xl px-4 py-2.5 text-sm font-bold">添加类别</button>
+        </div>
+        <div class="mt-3 p-3 rounded-xl border border-slate-800 bg-slate-950/40"
+            ondragover="window.onCategoryDragOver(event)"
+            ondrop="window.onPoolDrop(event)">
+            <div class="text-[11px] text-slate-400 mb-2">未分类币种池（可拖拽到下方类别，或把标签拖回这里）</div>
+            <div class="flex flex-wrap gap-2">${draggablePool || '<span class="text-[11px] text-slate-500">暂无币种</span>'}</div>
+        </div>
+        <div class="mt-4 flex flex-col gap-3">
+            ${rows}
+        </div>`;
+}
+
 function calculateAssetAllocations(data) {
     const totalValue = Number(data.value || 0);
     const assetMap = new Map();
@@ -791,8 +1228,66 @@ function calculateAssetAllocations(data) {
         }));
 }
 
+function calculateCategoryAllocations(data) {
+    const totalValue = Number(data.value || 0);
+    const symbolTotals = new Map();
+    const categoryMap = new Map();
+    const palette = ['#38bdf8', '#10b981', '#f59e0b', '#fb7185', '#22d3ee', '#a78bfa', '#f97316', '#60a5fa', '#34d399', '#f472b6'];
+
+    (data.children || []).forEach((source) => {
+        (source.children || []).forEach((net) => {
+            (net.children || []).forEach((token) => {
+                const symbol = (token.symbol || token.name || 'UNKNOWN').toUpperCase();
+                const current = symbolTotals.get(symbol) || 0;
+                symbolTotals.set(symbol, current + Number(token.value || 0));
+            });
+        });
+    });
+
+    const usedSymbols = new Set();
+    (globalCategories || []).forEach((category) => {
+        const name = (category.name || '').trim();
+        if (!name) return;
+        const categoryId = normalizeCategoryId(category.id || category._id);
+
+        const configuredSymbols = (Array.isArray(category.symbols) ? category.symbols : [])
+            .map((s) => String(s || '').trim().toUpperCase())
+            .filter(Boolean);
+
+        let value = 0;
+        const matchedSymbols = [];
+        configuredSymbols.forEach((symbol) => {
+            if (symbolTotals.has(symbol) && !usedSymbols.has(symbol)) {
+                value += Number(symbolTotals.get(symbol) || 0);
+                matchedSymbols.push(symbol);
+                usedSymbols.add(symbol);
+            }
+        });
+
+        categoryMap.set(name, {
+            id: categoryId,
+            name,
+            value,
+            count: matchedSymbols.length,
+            symbols: configuredSymbols,
+            manageable: true,
+        });
+    });
+
+    // 未分类币种通过顶部“未分类币种池”展示，不在类别卡中渲染。
+
+    return Array.from(categoryMap.values())
+        .map((item, index) => ({
+            ...item,
+            color: palette[index % palette.length],
+            percentage: totalValue > 0 ? (item.value / totalValue) * 100 : 0,
+            symbols: item.symbols.sort(),
+        }))
+        .sort((a, b) => b.value - a.value);
+}
+
 window.switchBreakdownView = (view) => {
-    currentBreakdownView = view === 'assets' ? 'assets' : 'wallets';
+    currentBreakdownView = view === 'assets' ? 'assets' : (view === 'categories' ? 'categories' : 'wallets');
     renderPortfolio(globalPortfolioData);
 };
 

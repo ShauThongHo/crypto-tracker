@@ -59,6 +59,121 @@ class AssetController extends Controller
         return response()->json($tree);
     }
 
+    public function getAssetCategories()
+    {
+        $categories = DB::table('asset_categories')->get()
+            ->map(function ($item) {
+                $rawId = $item->_id ?? ($item->id ?? null);
+                $id = '';
+
+                if (is_object($rawId)) {
+                    if (isset($rawId->{'$oid'})) {
+                        $id = (string) $rawId->{'$oid'};
+                    } elseif (method_exists($rawId, '__toString')) {
+                        $id = (string) $rawId;
+                    } else {
+                        $id = trim((string) json_encode($rawId));
+                    }
+                } elseif ($rawId !== null) {
+                    $id = (string) $rawId;
+                }
+
+                $symbols = collect($item->symbols ?? [])
+                    ->map(function ($symbol) {
+                        return strtoupper(trim((string) $symbol));
+                    })
+                    ->filter(function ($symbol) {
+                        return $symbol !== '';
+                    })
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                return [
+                    'id' => $id,
+                    'name' => trim((string) ($item->name ?? '')),
+                    'symbols' => $symbols,
+                ];
+            })
+            ->sortBy(function ($item) {
+                return mb_strtolower(trim((string) ($item['name'] ?? '')));
+            })
+            ->values();
+
+        return response()->json($categories);
+    }
+
+    public function storeAssetCategory(Request $request)
+    {
+        $v = $request->validate([
+            'name' => 'required|string|max:80',
+        ]);
+
+        $name = trim((string) $v['name']);
+        if ($name === '') {
+            return response()->json(['status' => 'error', 'message' => '类别名称不能为空'], 422);
+        }
+
+        $exists = DB::table('asset_categories')->get()->first(function ($item) use ($name) {
+            return mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
+        });
+
+        if ($exists) {
+            return response()->json(['status' => 'error', 'message' => '类别已存在'], 422);
+        }
+
+        DB::table('asset_categories')->insert([
+            'name' => $name,
+            'symbols' => [],
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['status' => 'success']);
+    }
+
+    public function updateAssetCategory(Request $request, $id)
+    {
+        $v = $request->validate([
+            'symbols' => 'array',
+            'symbols.*' => 'string|max:30',
+        ]);
+
+        $symbols = collect($v['symbols'] ?? [])
+            ->map(function ($symbol) {
+                return strtoupper(trim((string) $symbol));
+            })
+            ->filter(function ($symbol) {
+                return $symbol !== '';
+            })
+            ->unique()
+            ->values()
+            ->all();
+
+        $updated = DB::table('asset_categories')->where('_id', $id)->update([
+            'symbols' => $symbols,
+            'updated_at' => now(),
+        ]);
+
+        if ($updated === 0) {
+            return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
+        }
+
+        return response()->json(['status' => 'success']);
+    }
+
+    public function deleteAssetCategory($id)
+    {
+        $category = DB::table('asset_categories')->where('_id', $id)->first();
+
+        if (!$category) {
+            return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
+        }
+
+        DB::table('asset_categories')->where('_id', $id)->delete();
+
+        return response()->json(['status' => 'success']);
+    }
+
     /**
      * 获取资产价值快照历史
      */

@@ -33,6 +33,6 @@
         @yield('content')
     </main>
 
-    <script src="{{ asset('dashboard.js') }}"></script>
+    <script src="{{ asset('dashboard.js') }}?v={{ @filemtime(public_path('dashboard.js')) }}"></script>
 </body>
 </html>
