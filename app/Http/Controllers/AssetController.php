@@ -111,6 +111,8 @@ class AssetController extends Controller
         $v = $request->validate([
             'name' => 'required|string|max:80',
             'target_pct' => 'nullable|numeric|min:0|max:100',
+            'symbols' => 'nullable|array',
+            'symbols.*' => 'string|max:30',
         ]);
 
         $name = trim((string) $v['name']);
@@ -126,19 +128,58 @@ class AssetController extends Controller
             return response()->json(['status' => 'error', 'message' => '类别已存在'], 422);
         }
 
+        $symbols = collect($v['symbols'] ?? [])
+            ->map(function ($symbol) {
+                return strtoupper(trim((string) $symbol));
+            })
+            ->filter(function ($symbol) {
+                return $symbol !== '';
+            })
+            ->unique()
+            ->values()
+            ->all();
+
         DB::table('asset_categories')->insert([
             'name' => $name,
-            'symbols' => [],
+            'symbols' => $symbols,
             'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
             'created_at' => now(),
+            'updated_at' => now(),
         ]);
 
-        return response()->json(['status' => 'success']);
+        $created = DB::table('asset_categories')->get()->first(function ($item) use ($name) {
+            return mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
+        });
+
+        $createdId = '';
+        if ($created) {
+            $rawId = $created->_id ?? ($created->id ?? null);
+            if (is_object($rawId)) {
+                if (isset($rawId->{'$oid'})) {
+                    $createdId = (string) $rawId->{'$oid'};
+                } elseif (method_exists($rawId, '__toString')) {
+                    $createdId = (string) $rawId;
+                }
+            } elseif ($rawId !== null) {
+                $createdId = (string) $rawId;
+            }
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'id' => $createdId,
+                'name' => $name,
+                'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
+                'symbols' => $symbols,
+            ],
+        ]);
     }
 
     public function updateAssetCategory(Request $request, $id)
     {
         $v = $request->validate([
+            'name' => 'nullable|string|max:80',
             'symbols' => 'array',
             'symbols.*' => 'string|max:30',
             'target_pct' => 'nullable|numeric|min:0|max:100',
@@ -157,6 +198,36 @@ class AssetController extends Controller
 
         $updateData = ['updated_at' => now()];
 
+        if ($request->has('name')) {
+            $name = trim((string) ($v['name'] ?? ''));
+            if ($name === '') {
+                return response()->json(['status' => 'error', 'message' => '类别名称不能为空'], 422);
+            }
+
+            $exists = DB::table('asset_categories')->get()->first(function ($item) use ($name, $id) {
+                $rawId = $item->_id ?? ($item->id ?? null);
+                $itemId = '';
+                if (is_object($rawId)) {
+                    if (isset($rawId->{'$oid'})) {
+                        $itemId = (string) $rawId->{'$oid'};
+                    } elseif (method_exists($rawId, '__toString')) {
+                        $itemId = (string) $rawId;
+                    }
+                } elseif ($rawId !== null) {
+                    $itemId = (string) $rawId;
+                }
+
+                return $itemId !== (string) $id
+                    && mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
+            });
+
+            if ($exists) {
+                return response()->json(['status' => 'error', 'message' => '类别已存在'], 422);
+            }
+
+            $updateData['name'] = $name;
+        }
+
         if ($request->has('symbols')) {
             $updateData['symbols'] = $symbols;
         }
@@ -165,7 +236,10 @@ class AssetController extends Controller
             $updateData['target_pct'] = max(0, (float) ($v['target_pct'] ?? 0));
         }
 
-        $updated = DB::table('asset_categories')->where('_id', $id)->update($updateData);
+        $updated = DB::table('asset_categories')
+            ->where('_id', $id)
+            ->orWhere('id', $id)
+            ->update($updateData);
 
         if ($updated === 0) {
             return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
@@ -970,12 +1044,26 @@ class AssetController extends Controller
     private function getCachedBalanceAlertSnapshotPayload(array $input): array
     {
         $normalized = $this->normalizeSnapshotCacheInput($input);
+        $normalized['_allocations_fingerprint'] = $this->getBalanceAlertAllocationsFingerprint();
         $hash = md5(json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $cacheKey = 'balance_alert:snapshot:' . $hash;
 
         return Cache::remember($cacheKey, 300, function () use ($input) {
             return $this->buildBalanceAlertSnapshotPayload($input);
         });
+    }
+
+    private function getBalanceAlertAllocationsFingerprint(): string
+    {
+        $rows = DB::table('asset_categories')->get();
+
+        $count = $rows->count();
+        $lastUpdated = $rows->map(function ($row) {
+            $updated = $row->updated_at ?? $row->created_at ?? null;
+            return $updated ? (string) $updated : '';
+        })->filter()->sort()->last();
+
+        return $count . ':' . ($lastUpdated ?? 'none');
     }
 
     private function normalizeSnapshotCacheInput($value)

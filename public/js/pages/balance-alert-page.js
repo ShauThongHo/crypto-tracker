@@ -4,12 +4,16 @@ class BalanceAlertPage {
         this.snapshot = null;
         this.allocations = [];
         this.draggingSymbol = null;
-        this.sequence = 1;
         this.autoRefreshTimer = null;
         this.preferredCurrency = 'USD';
         this.exchangeRate = 4.2;
         this.currentTotalValueUsd = 0;
-        this.hasLocalAllocationConfig = false;
+        this.categoryApiBase = '/api/asset-categories';
+        this.dirtyAllocationIds = new Set();
+        this.pendingDeleteIds = new Set();
+        this.persistTimer = null;
+        this.isPersistingAllocations = false;
+        this.persistQueued = false;
 
         this.bindElements();
         this.restoreConfig();
@@ -126,45 +130,51 @@ class BalanceAlertPage {
 
             this.saveConfig();
             this.updateTargetSum();
+            this.markAllocationDirty(allocation.id);
+            this.schedulePersistAllocations();
             this.scheduleSnapshotRefresh();
         });
 
-        this.allocationList.addEventListener('click', (event) => {
+        this.allocationList.addEventListener('click', async (event) => {
             const deleteBtn = event.target.closest('.delete-allocation-btn');
             if (!deleteBtn) return;
             const allocationId = deleteBtn.dataset.allocationId;
-            this.deleteAllocation(allocationId);
-            this.saveConfig();
-            this.renderAllocationList();
-            this.checkSnapshot();
+            try {
+                await this.deleteAllocation(allocationId);
+                this.saveConfig();
+                this.renderAllocationList();
+                this.checkSnapshot();
+            } catch (error) {
+                this.setStatus('error', error.message || '删除格子失败');
+            }
         });
 
         this.allocationList.addEventListener('dragover', (event) => {
             event.preventDefault();
         });
 
-        this.allocationList.addEventListener('drop', (event) => {
+        this.allocationList.addEventListener('drop', async (event) => {
             event.preventDefault();
             const symbol = (event.dataTransfer && event.dataTransfer.getData('text/plain')) || this.draggingSymbol;
             const dropZone = event.target.closest('.allocation-drop-zone');
             if (dropZone) {
                 const allocationId = dropZone.dataset.allocationId;
-                this.assignSymbolToAllocation(symbol, allocationId);
+                await this.assignSymbolToAllocation(symbol, allocationId);
                 return;
             }
 
             if (!symbol) return;
-            this.createSingleCoinAllocation(symbol);
+            await this.createSingleCoinAllocation(symbol);
         });
 
         this.tokenPool.addEventListener('dragover', (event) => {
             event.preventDefault();
         });
 
-        this.tokenPool.addEventListener('drop', (event) => {
+        this.tokenPool.addEventListener('drop', async (event) => {
             event.preventDefault();
             const symbol = (event.dataTransfer && event.dataTransfer.getData('text/plain')) || this.draggingSymbol;
-            this.unassignSymbol(symbol);
+            await this.unassignSymbol(symbol);
         });
 
         [this.webhookUrl, this.prepareThreshold, this.rebalanceThreshold, this.forceThreshold].forEach((el) => {
@@ -261,46 +271,29 @@ class BalanceAlertPage {
     restoreConfig() {
         try {
             const raw = localStorage.getItem(this.storageKey);
-            if (!raw) {
-                this.hasLocalAllocationConfig = false;
-                return;
-            }
-            this.hasLocalAllocationConfig = true;
+            if (!raw) return;
             const data = JSON.parse(raw);
             this.webhookUrl.value = data.webhookUrl || '';
             this.prepareThreshold.value = data.prepareThreshold ?? 3;
             this.rebalanceThreshold.value = data.rebalanceThreshold ?? 5;
             this.forceThreshold.value = data.forceThreshold ?? 7.5;
-            this.allocations = Array.isArray(data.allocations) ? data.allocations : [];
-            this.sequence = Number(data.sequence || 1);
         } catch (error) {
             console.warn('读取平衡提醒配置失败', error);
         }
     }
 
     async loadCategoryDefaults() {
-        if (this.hasLocalAllocationConfig || this.allocations.length > 0) {
-            return;
-        }
-
         try {
-            const res = await fetch('/api/asset-categories', {
+            const res = await fetch(this.categoryApiBase, {
                 headers: {
                     'Accept': 'application/json',
                 },
             });
 
             const categories = await res.json();
-            if (!res.ok || !Array.isArray(categories) || categories.length === 0) return;
+            if (!res.ok || !Array.isArray(categories)) return;
 
-            this.allocations = categories.map((category, index) => ({
-                id: category.id || `category-${index + 1}`,
-                name: category.name || `格子 ${index + 1}`,
-                target_pct: this.parseNumber(category.target_pct, 0),
-                symbols: Array.isArray(category.symbols) ? category.symbols : [],
-            }));
-
-            this.saveConfig();
+            this.allocations = categories.map((category, index) => this.normalizeAllocation(category, index));
         } catch (error) {
             console.warn('读取分类默认占比失败', error);
         }
@@ -312,8 +305,6 @@ class BalanceAlertPage {
             prepareThreshold: this.parseNumber(this.prepareThreshold.value, 3),
             rebalanceThreshold: this.parseNumber(this.rebalanceThreshold.value, 5),
             forceThreshold: this.parseNumber(this.forceThreshold.value, 7.5),
-            allocations: this.allocations,
-            sequence: this.sequence,
         }));
     }
 
@@ -334,95 +325,290 @@ class BalanceAlertPage {
         return { prepare_threshold: prepare, rebalance_threshold: rebalance, force_threshold: force };
     }
 
-    createAllocation(name, symbols) {
-        const normalizedSymbols = [...new Set((symbols || []).map((s) => String(s || '').toUpperCase().trim()).filter(Boolean))];
+    normalizeSymbols(symbols) {
+        return [...new Set((Array.isArray(symbols) ? symbols : [])
+            .map((symbol) => String(symbol || '').toUpperCase().trim())
+            .filter(Boolean))];
+    }
+
+    normalizeAllocation(category, index = 0) {
+        const symbols = this.normalizeSymbols(category.symbols || []);
+        const fallbackName = symbols.length === 1 ? symbols[0] : `格子 ${index + 1}`;
+
         return {
-            id: `alloc-${this.sequence++}`,
-            name: name || (normalizedSymbols.length === 1 ? normalizedSymbols[0] : `组合 ${this.sequence - 1}`),
-            target_pct: 0,
-            symbols: normalizedSymbols,
+            id: String(category.id || ''),
+            name: String(category.name || fallbackName).trim() || fallbackName,
+            target_pct: this.parseNumber(category.target_pct, 0),
+            symbols,
         };
     }
 
-    addAllocation() {
-        this.allocations.push(this.createAllocation(`格子 ${this.allocations.length + 1}`, []));
-        this.saveConfig();
-        this.renderAllocationList();
+    markAllocationDirty(id) {
+        if (!id) return;
+        this.dirtyAllocationIds.add(String(id));
     }
 
-    createSingleCoinAllocation(symbol) {
+    schedulePersistAllocations(delay = 700) {
+        if (this.persistTimer) {
+            clearTimeout(this.persistTimer);
+        }
+
+        this.persistTimer = setTimeout(() => {
+            this.persistTimer = null;
+            this.flushAllocationPersistence();
+        }, delay);
+    }
+
+    async flushAllocationPersistence() {
+        if (this.isPersistingAllocations) {
+            this.persistQueued = true;
+            return;
+        }
+
+        this.isPersistingAllocations = true;
+        const dirtyIds = [...this.dirtyAllocationIds];
+        const deleteIds = [...this.pendingDeleteIds];
+        this.dirtyAllocationIds.clear();
+        this.pendingDeleteIds.clear();
+
+        try {
+            for (const id of deleteIds) {
+                if (!id) continue;
+
+                const res = await fetch(`${this.categoryApiBase}/${encodeURIComponent(id)}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                        'Accept': 'application/json',
+                    },
+                });
+
+                if (!res.ok) {
+                    throw new Error('删除类别失败');
+                }
+            }
+
+            for (const id of dirtyIds) {
+                const allocation = this.findAllocation(id);
+                if (!allocation) continue;
+
+                const res = await fetch(`${this.categoryApiBase}/${encodeURIComponent(id)}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                    },
+                    body: JSON.stringify({
+                        name: (allocation.name || '').trim() || id,
+                        target_pct: this.parseNumber(allocation.target_pct, 0),
+                        symbols: this.normalizeSymbols(allocation.symbols || []),
+                    }),
+                });
+
+                if (!res.ok) {
+                    throw new Error('更新类别失败');
+                }
+            }
+        } catch (error) {
+            this.setStatus('warn', '同步分类配置到数据库失败，已保留本地编辑。');
+        } finally {
+            this.isPersistingAllocations = false;
+            if (this.persistQueued) {
+                this.persistQueued = false;
+                this.schedulePersistAllocations(80);
+            }
+        }
+    }
+
+    async createCategory(payload) {
+        const res = await fetch(this.categoryApiBase, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+            },
+            body: JSON.stringify({
+                name: String(payload.name || '').trim(),
+                target_pct: this.parseNumber(payload.target_pct, 0),
+                symbols: this.normalizeSymbols(payload.symbols || []),
+            }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.message || '新增类别失败');
+        }
+
+        return this.normalizeAllocation(data.data || payload, this.allocations.length);
+    }
+
+    async addAllocation() {
+        try {
+            const created = await this.createCategory({
+                name: `格子 ${this.allocations.length + 1}`,
+                target_pct: 0,
+                symbols: [],
+            });
+
+            if (!created.id) {
+                await this.loadCategoryDefaults();
+            } else {
+                this.allocations.push(created);
+            }
+
+            this.renderAllocationList();
+            this.scheduleSnapshotRefresh(120);
+        } catch (error) {
+            this.setStatus('error', error.message || '新增格子失败');
+        }
+    }
+
+    async createSingleCoinAllocation(symbol) {
         const clean = String(symbol).toUpperCase().trim();
         if (!clean) return;
 
-        this.allocations = this.allocations.filter((item) => {
-            const symbols = (item.symbols || []).map((s) => String(s).toUpperCase().trim()).filter(Boolean);
-            return !symbols.includes(clean);
+        const changedIds = [];
+        this.allocations.forEach((item) => {
+            const before = this.normalizeSymbols(item.symbols || []);
+            const after = before.filter((current) => current !== clean);
+            if (before.length !== after.length) {
+                item.symbols = after;
+                changedIds.push(item.id);
+            }
         });
 
-        this.allocations.push({
-            id: `alloc-${this.sequence++}`,
-            name: clean,
-            target_pct: 0,
-            symbols: [clean],
-        });
-
-        this.saveConfig();
-        this.renderAllocationList();
+        try {
+            const created = await this.createCategory({
+                name: clean,
+                target_pct: 0,
+                symbols: [clean],
+            });
+            this.allocations.push(created);
+            this.compactEmptyAllocations();
+            changedIds.forEach((id) => this.markAllocationDirty(id));
+            this.schedulePersistAllocations(100);
+            this.renderAllocationList();
+            this.scheduleSnapshotRefresh(120);
+        } catch (error) {
+            this.setStatus('error', error.message || '创建单币格子失败');
+            await this.loadCategoryDefaults();
+            this.renderAllocationList();
+        }
     }
 
     findAllocation(id) {
         return this.allocations.find((item) => item.id === id);
     }
 
-    deleteAllocation(id) {
+    async deleteAllocation(id) {
         const index = this.allocations.findIndex((item) => item.id === id);
         if (index < 0) return;
+
+        const res = await fetch(`${this.categoryApiBase}/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                'Accept': 'application/json',
+            },
+        });
+
+        if (!res.ok) {
+            throw new Error('删除类别失败');
+        }
+
         this.allocations.splice(index, 1);
     }
 
-    assignSymbolToAllocation(symbol, allocationId) {
+    compactEmptyAllocations() {
+        const removedIds = [];
+        this.allocations = this.allocations.filter((item) => {
+            const hasSymbols = this.normalizeSymbols(item.symbols || []).length > 0;
+            const hasName = String(item.name || '').trim() !== '';
+            if (hasSymbols || hasName) {
+                return true;
+            }
+
+            if (item.id) {
+                removedIds.push(String(item.id));
+            }
+
+            return false;
+        });
+
+        removedIds.forEach((id) => this.pendingDeleteIds.add(id));
+        return removedIds;
+    }
+
+    async assignSymbolToAllocation(symbol, allocationId) {
         if (!symbol) return;
         const clean = String(symbol).toUpperCase().trim();
         if (!clean) return;
 
+        const changedIds = [];
+
         this.allocations.forEach((item) => {
-            item.symbols = (item.symbols || []).filter((s) => String(s).toUpperCase() !== clean);
+            const before = this.normalizeSymbols(item.symbols || []);
+            const after = before.filter((current) => current !== clean);
+            if (before.length !== after.length) {
+                item.symbols = after;
+                changedIds.push(item.id);
+            }
         });
 
         const allocation = this.findAllocation(allocationId);
         if (allocation) {
-            allocation.symbols = [...new Set([...(allocation.symbols || []), clean])];
+            const symbols = this.normalizeSymbols([...(allocation.symbols || []), clean]);
+            if (symbols.join('|') !== this.normalizeSymbols(allocation.symbols || []).join('|')) {
+                allocation.symbols = symbols;
+                changedIds.push(allocation.id);
+            }
             if (!allocation.name || allocation.name.startsWith('格子 ') || allocation.name.startsWith('单币格子')) {
                 allocation.name = allocation.symbols.length === 1 ? allocation.symbols[0] : allocation.name;
+                changedIds.push(allocation.id);
             }
         }
 
-        this.allocations = this.allocations.filter((item) => (item.symbols || []).length > 0 || item.name.startsWith('格子'));
+        this.compactEmptyAllocations();
+        changedIds.forEach((id) => this.markAllocationDirty(id));
+        this.schedulePersistAllocations();
         this.saveConfig();
         this.renderAllocationList();
+        this.scheduleSnapshotRefresh();
     }
 
-    unassignSymbol(symbol) {
+    async unassignSymbol(symbol) {
         if (!symbol) return;
         const clean = String(symbol).toUpperCase().trim();
         if (!clean) return;
 
+        const changedIds = [];
+
         this.allocations.forEach((item) => {
-            item.symbols = (item.symbols || []).filter((s) => String(s).toUpperCase() !== clean);
+            const before = this.normalizeSymbols(item.symbols || []);
+            const after = before.filter((current) => current !== clean);
+            if (before.length !== after.length) {
+                item.symbols = after;
+                changedIds.push(item.id);
+            }
         });
 
-        this.allocations = this.allocations.filter((item) => (item.symbols || []).length > 0 || (item.name || '').trim() !== '');
+        this.compactEmptyAllocations();
+        changedIds.forEach((id) => this.markAllocationDirty(id));
+        this.schedulePersistAllocations();
         this.saveConfig();
         this.renderAllocationList();
+        this.scheduleSnapshotRefresh();
     }
 
     getAllocationsPayload() {
         return this.allocations
             .map((item) => ({
-                id: item.id,
-                name: (item.name || '').trim() || (item.symbols.length === 1 ? item.symbols[0] : item.id),
+                id: String(item.id || '').trim(),
+                name: (item.name || '').trim() || (item.symbols.length === 1 ? item.symbols[0] : String(item.id || '')),
                 target_pct: this.parseNumber(item.target_pct, 0),
-                symbols: [...new Set((item.symbols || []).map((s) => String(s || '').toUpperCase().trim()).filter(Boolean))],
+                symbols: this.normalizeSymbols(item.symbols || []),
             }))
             .filter((item) => item.symbols.length > 0 || (item.name || '').startsWith('格子'));
     }
@@ -500,9 +686,13 @@ class BalanceAlertPage {
     applyEqualTargets() {
         if (!this.allocations.length) return;
         const equal = 100 / this.allocations.length;
-        this.allocations.forEach((item) => { item.target_pct = Number(equal.toFixed(4)); });
+        this.allocations.forEach((item) => {
+            item.target_pct = Number(equal.toFixed(4));
+            this.markAllocationDirty(item.id);
+        });
         this.saveConfig();
         this.renderAllocationList();
+        this.schedulePersistAllocations();
         this.checkSnapshot();
     }
 
@@ -510,10 +700,14 @@ class BalanceAlertPage {
         if (!this.snapshot || !Array.isArray(this.snapshot.items)) return;
         const currentMap = new Map(this.snapshot.items.map((item) => [item.name, item.weight_pct]));
         this.allocations.forEach((item) => {
-            if (currentMap.has(item.name)) item.target_pct = Number(currentMap.get(item.name) || 0);
+            if (currentMap.has(item.name)) {
+                item.target_pct = Number(currentMap.get(item.name) || 0);
+                this.markAllocationDirty(item.id);
+            }
         });
         this.saveConfig();
         this.renderAllocationList();
+        this.schedulePersistAllocations();
         this.checkSnapshot();
     }
 
@@ -522,7 +716,6 @@ class BalanceAlertPage {
             prepare_threshold: this.parseNumber(this.prepareThreshold.value, 3),
             rebalance_threshold: this.parseNumber(this.rebalanceThreshold.value, 5),
             force_threshold: this.parseNumber(this.forceThreshold.value, 7.5),
-            allocations: this.getAllocationsPayload(),
         };
     }
 

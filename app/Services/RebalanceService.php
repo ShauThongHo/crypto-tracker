@@ -22,6 +22,9 @@ class RebalanceService
     public function calculateProportional(array $assets, float $totalPortfolio, float $inactiveThresholdPct = 5.0): array
     {
         $portfolio = $this->normalizeNumber($totalPortfolio);
+        $hundred = '100';
+        $epsilon = '0.000000001';
+
         if ($this->compare($portfolio, '0') <= 0) {
             return [
                 'k_factor' => 1.0,
@@ -38,10 +41,11 @@ class RebalanceService
         $inactiveTargetPct = '0';
         $activeIndexes = [];
 
+        // Step 1: inactive 判定（|current - target| < threshold）
         foreach ($assets as $index => $asset) {
             $currentValue = $this->normalizeNumber($asset['current_value'] ?? $asset['value'] ?? 0);
             $targetPct = $this->normalizeNumber($asset['target_pct'] ?? 0);
-            $currentPct = $this->divide($this->multiply($currentValue, '100'), $portfolio);
+            $currentPct = $this->divide($this->multiply($currentValue, $hundred), $portfolio);
             $deviationPct = $this->abs($this->subtract($currentPct, $targetPct));
             $isInactive = $this->compare($deviationPct, $threshold) < 0;
 
@@ -66,21 +70,26 @@ class RebalanceService
             }
         }
 
-        $activeTargetBase = $this->subtract('100', $inactiveTargetPct);
-        $kFactor = $this->compare($activeTargetBase, '0') > 0
-            ? $this->divide($this->subtract('100', $inactiveCurrentPct), $activeTargetBase)
+        // Step 2: K = (1 - S_inactive) / (1 - T_inactive) (百分比形式等價為 (100 - S)/(100 - T))
+        $activeCurrentSpace = $this->subtract($hundred, $inactiveCurrentPct);
+        $activeTargetSpace = $this->subtract($hundred, $inactiveTargetPct);
+        $kFactor = $this->compare($this->abs($activeTargetSpace), $epsilon) > 0
+            ? $this->divide($activeCurrentSpace, $activeTargetSpace)
             : '1';
 
         $totalNewTargetPct = '0';
+
+        // Step 3: 新目標（active 用 target * K；inactive 鎖定 current）
         foreach ($items as $index => $item) {
             if (!$item['is_active']) {
                 $newTargetPct = $item['current_pct'];
                 $newTargetValue = $item['current_value'];
             } else {
                 $newTargetPct = $this->multiply($item['target_pct'], $kFactor);
-                $newTargetValue = $this->divide($this->multiply($portfolio, $newTargetPct), '100');
+                $newTargetValue = $this->divide($this->multiply($portfolio, $newTargetPct), $hundred);
             }
 
+            // Step 4: Advice = New_Target_Value - Current_Value
             $adviceUsd = $this->subtract($newTargetValue, $item['current_value']);
             $item['new_target_pct'] = $newTargetPct;
             $item['new_target_value'] = $newTargetValue;
@@ -90,12 +99,15 @@ class RebalanceService
             $items[$index] = $item;
         }
 
-        // 理論上應該等於 100%，這裡只做極小誤差修正，避免顯示偏差。
-        $residualPct = $this->subtract('100', $totalNewTargetPct);
-        if ($this->compare($this->abs($residualPct), '0.000000001') > 0 && !empty($activeIndexes)) {
-            $adjustIndex = $activeIndexes[count($activeIndexes) - 1];
+        // Step 5: 嚴格收斂到 100%
+        $residualPct = $this->subtract($hundred, $totalNewTargetPct);
+        if ($this->compare($this->abs($residualPct), $epsilon) > 0 && !empty($items)) {
+            $adjustIndex = !empty($activeIndexes)
+                ? $activeIndexes[count($activeIndexes) - 1]
+                : array_key_last($items);
+
             $items[$adjustIndex]['new_target_pct'] = $this->add($items[$adjustIndex]['new_target_pct'], $residualPct);
-            $items[$adjustIndex]['new_target_value'] = $this->divide($this->multiply($portfolio, $items[$adjustIndex]['new_target_pct']), '100');
+            $items[$adjustIndex]['new_target_value'] = $this->divide($this->multiply($portfolio, $items[$adjustIndex]['new_target_pct']), $hundred);
             $items[$adjustIndex]['advice_usd'] = $this->subtract($items[$adjustIndex]['new_target_value'], $items[$adjustIndex]['current_value']);
             $items[$adjustIndex]['advice_action'] = $this->compare($items[$adjustIndex]['advice_usd'], '0') > 0 ? 'buy' : ($this->compare($items[$adjustIndex]['advice_usd'], '0') < 0 ? 'sell' : 'hold');
 
