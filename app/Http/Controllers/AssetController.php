@@ -293,13 +293,68 @@ class AssetController extends Controller
 
     private function getBalanceAlertAutomationConfig(): array
     {
+        $storedWebhookUrl = $this->getStoredBalanceAlertWebhookUrl();
+        $envWebhookUrl = trim((string) config('services.balance_alert.auto_notify_webhook_url', ''));
+        $webhookUrl = $envWebhookUrl !== '' ? $envWebhookUrl : $storedWebhookUrl;
+
         return [
-            'enabled' => (bool) config('services.balance_alert.auto_notify_enabled', false),
-            'webhook_url' => (string) config('services.balance_alert.auto_notify_webhook_url', ''),
+            'enabled' => (bool) config('services.balance_alert.auto_notify_enabled', false) || trim($webhookUrl) !== '',
+            'webhook_url' => $webhookUrl,
+            'webhook_source' => $envWebhookUrl !== '' ? 'env' : ($storedWebhookUrl !== '' ? 'db' : 'missing'),
             'prepare_threshold' => (float) config('services.balance_alert.auto_notify_prepare_threshold', config('services.balance_alert.prepare_threshold', 3.0)),
             'rebalance_threshold' => (float) config('services.balance_alert.auto_notify_rebalance_threshold', config('services.balance_alert.rebalance_threshold', 5.0)),
             'force_threshold' => (float) config('services.balance_alert.auto_notify_force_threshold', config('services.balance_alert.force_threshold', 7.5)),
         ];
+    }
+
+    public function getBalanceAlertSettings()
+    {
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'webhook_url' => $this->getStoredBalanceAlertWebhookUrl(),
+            ],
+        ]);
+    }
+
+    public function updateBalanceAlertSettings(Request $request)
+    {
+        $v = $request->validate([
+            'webhook_url' => 'nullable|url',
+        ]);
+
+        $webhookUrl = trim((string) ($v['webhook_url'] ?? ''));
+        $this->storeBalanceAlertWebhookUrl($webhookUrl);
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'webhook_url' => $webhookUrl,
+            ],
+        ]);
+    }
+
+    private function getStoredBalanceAlertWebhookUrl(): string
+    {
+        $row = DB::table('app_settings')->where('key', 'balance_alert_webhook_url')->first();
+
+        if (!$row) {
+            return '';
+        }
+
+        return trim((string) ($row->value ?? ''));
+    }
+
+    private function storeBalanceAlertWebhookUrl(string $webhookUrl): void
+    {
+        DB::table('app_settings')->updateOrInsert(
+            ['key' => 'balance_alert_webhook_url'],
+            [
+                'value' => $webhookUrl,
+                'updated_at' => now(),
+                'created_at' => now(),
+            ]
+        );
     }
 
     private function getStoredBalanceAlertCategoryAllocations(): array
@@ -436,6 +491,7 @@ class AssetController extends Controller
             return [
                 'sent' => false,
                 'reason' => 'disabled_or_missing_webhook',
+                'webhook_source' => $config['webhook_source'],
             ];
         }
 
@@ -443,22 +499,29 @@ class AssetController extends Controller
             'category_allocations' => $this->getStoredBalanceAlertCategoryAllocations(),
         ]);
 
-        $level = (string) ($snapshot['level'] ?? 'none');
-        if (!in_array($level, ['prepare', 'rebalance', 'force'], true)) {
+        $decision = $this->determineHealthCheckAutoNotifyLevel($snapshot, $config);
+        $level = (string) ($decision['level'] ?? 'none');
+        if ($level === 'none') {
             $this->resetHealthCheckTriggerCounter();
-            return [
+            return array_merge([
                 'sent' => false,
-                'reason' => 'not_triggered',
-                'level' => $level,
-            ];
+                'count' => 0,
+                'required_count' => 2,
+                'webhook_source' => $config['webhook_source'],
+            ], $decision);
         }
 
         $dateKey = Carbon::now('Asia/Kuala_Lumpur')->toDateString();
-        $countKey = "balance_alert:auto:trigger_count:{$dateKey}";
-        $sentKey = "balance_alert:auto:sent:{$dateKey}";
+        $countKey = "balance_alert:auto:{$dateKey}:{$level}:streak";
+        $sentKey = "balance_alert:auto:{$dateKey}:{$level}:sent";
+        $lastLevelKey = "balance_alert:auto:{$dateKey}:last_level";
         $ttl = $this->secondsUntilEndOfDay();
 
-        $currentCount = (int) Cache::get($countKey, 0) + 1;
+        $lastLevel = (string) Cache::get($lastLevelKey, 'none');
+        $previousCount = (int) Cache::get($countKey, 0);
+        $currentCount = $lastLevel === $level ? $previousCount + 1 : 1;
+
+        Cache::put($lastLevelKey, $level, $ttl);
         Cache::put($countKey, $currentCount, $ttl);
 
         if ($currentCount < 2) {
@@ -466,7 +529,10 @@ class AssetController extends Controller
                 'sent' => false,
                 'reason' => 'waiting_second_trigger',
                 'count' => $currentCount,
+                'required_count' => 2,
                 'level' => $level,
+                'webhook_source' => $config['webhook_source'],
+                'in_window' => (bool) data_get($decision, 'in_window', false),
             ];
         }
 
@@ -475,14 +541,19 @@ class AssetController extends Controller
                 'sent' => false,
                 'reason' => 'already_sent_today',
                 'count' => $currentCount,
+                'required_count' => 2,
                 'level' => $level,
+                'webhook_source' => $config['webhook_source'],
+                'in_window' => (bool) data_get($decision, 'in_window', false),
             ];
         }
 
         $content = $this->buildBalanceAlertDiscordContent($snapshot, [
             '【自动健康检查】',
+            '等级: ' . $level,
             '来源: /health-check',
             '触发计数: ' . $currentCount . '/2',
+            '窗口状态: ' . ((bool) data_get($decision, 'in_window', false) ? 'in_window' : 'out_of_window'),
         ]);
 
         $res = Http::timeout(10)->post($config['webhook_url'], [
@@ -496,7 +567,10 @@ class AssetController extends Controller
                 'http_status' => $res->status(),
                 'response' => $res->body(),
                 'count' => $currentCount,
+                'required_count' => 2,
                 'level' => $level,
+                'webhook_source' => $config['webhook_source'],
+                'in_window' => (bool) data_get($decision, 'in_window', false),
             ];
         }
 
@@ -506,14 +580,69 @@ class AssetController extends Controller
             'sent' => true,
             'reason' => 'dispatched',
             'count' => $currentCount,
+            'required_count' => 2,
             'level' => $level,
+            'webhook_source' => $config['webhook_source'],
+            'in_window' => (bool) data_get($decision, 'in_window', false),
         ];
     }
 
     private function resetHealthCheckTriggerCounter(): void
     {
         $dateKey = Carbon::now('Asia/Kuala_Lumpur')->toDateString();
-        Cache::forget("balance_alert:auto:trigger_count:{$dateKey}");
+        Cache::forget("balance_alert:auto:{$dateKey}:last_level");
+        Cache::forget("balance_alert:auto:{$dateKey}:prepare:streak");
+        Cache::forget("balance_alert:auto:{$dateKey}:rebalance:streak");
+        Cache::forget("balance_alert:auto:{$dateKey}:force:streak");
+    }
+
+    private function determineHealthCheckAutoNotifyLevel(array $snapshot, array $config): array
+    {
+        $maxDeviation = (float) data_get($snapshot, 'advice.max_deviation_pct', data_get($snapshot, 'portfolio.max_deviation_pct', 0));
+        $inWindow = (bool) data_get($snapshot, 'window.in_rebalance_window', false);
+
+        if ($maxDeviation >= (float) $config['force_threshold']) {
+            return [
+                'level' => 'force',
+                'reason' => 'force_threshold_reached',
+                'in_window' => $inWindow,
+                'max_deviation_pct' => $maxDeviation,
+            ];
+        }
+
+        if ($maxDeviation >= (float) $config['rebalance_threshold']) {
+            if ($inWindow) {
+                return [
+                    'level' => 'rebalance',
+                    'reason' => 'rebalance_threshold_reached_in_window',
+                    'in_window' => true,
+                    'max_deviation_pct' => $maxDeviation,
+                ];
+            }
+
+            return [
+                'level' => 'none',
+                'reason' => 'rebalance_threshold_outside_window',
+                'in_window' => false,
+                'max_deviation_pct' => $maxDeviation,
+            ];
+        }
+
+        if ($maxDeviation >= (float) $config['prepare_threshold']) {
+            return [
+                'level' => 'prepare',
+                'reason' => 'prepare_threshold_reached',
+                'in_window' => $inWindow,
+                'max_deviation_pct' => $maxDeviation,
+            ];
+        }
+
+        return [
+            'level' => 'none',
+            'reason' => 'below_prepare_threshold',
+            'in_window' => $inWindow,
+            'max_deviation_pct' => $maxDeviation,
+        ];
     }
 
     /**

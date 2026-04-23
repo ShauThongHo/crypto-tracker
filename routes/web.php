@@ -61,6 +61,8 @@ Route::prefix('api')->group(function () {
     Route::get('/balance-alert/snapshot', [AssetController::class, 'getBalanceAlertSnapshot']);
     Route::post('/balance-alert/snapshot', [AssetController::class, 'getBalanceAlertSnapshot']);
     Route::post('/balance-alert/notify', [AssetController::class, 'sendBalanceAlert']);
+    Route::get('/balance-alert/settings', [AssetController::class, 'getBalanceAlertSettings']);
+    Route::put('/balance-alert/settings', [AssetController::class, 'updateBalanceAlertSettings']);
 
     Route::get('/tracked-tokens', [AssetController::class, 'getTrackedTokens']);
     Route::get('/tracked-tokens/search', [AssetController::class, 'searchTrackedTokens']);

@@ -9,6 +9,7 @@ class BalanceAlertPage {
         this.exchangeRate = 4.2;
         this.currentTotalValueUsd = 0;
         this.categoryApiBase = '/api/asset-categories';
+        this.settingsApiBase = '/api/balance-alert/settings';
         this.dirtyAllocationIds = new Set();
         this.pendingDeleteIds = new Set();
         this.persistTimer = null;
@@ -23,6 +24,7 @@ class BalanceAlertPage {
     async initialize() {
         await this.initCurrencyPreference();
         await this.loadCategoryDefaults();
+        await this.syncWebhookSetting();
         this.bindEvents();
         this.renderAllocationList();
         this.checkSnapshot();
@@ -177,7 +179,8 @@ class BalanceAlertPage {
             await this.unassignSymbol(symbol);
         });
 
-        [this.webhookUrl, this.prepareThreshold, this.rebalanceThreshold, this.forceThreshold].forEach((el) => {
+        this.webhookUrl.addEventListener('change', () => this.persistWebhookSetting());
+        [this.prepareThreshold, this.rebalanceThreshold, this.forceThreshold].forEach((el) => {
             el.addEventListener('change', () => this.saveConfig());
         });
     }
@@ -306,6 +309,59 @@ class BalanceAlertPage {
             rebalanceThreshold: this.parseNumber(this.rebalanceThreshold.value, 5),
             forceThreshold: this.parseNumber(this.forceThreshold.value, 7.5),
         }));
+    }
+
+    async syncWebhookSetting() {
+        const localWebhook = this.webhookUrl.value.trim();
+
+        try {
+            const res = await fetch(this.settingsApiBase, {
+                headers: {
+                    'Accept': 'application/json',
+                },
+            });
+
+            const data = await res.json();
+            const storedWebhook = String(data?.data?.webhook_url || '').trim();
+
+            if (!localWebhook && storedWebhook) {
+                this.webhookUrl.value = storedWebhook;
+                this.saveConfig();
+                return;
+            }
+
+            if (localWebhook && localWebhook !== storedWebhook) {
+                await this.persistWebhookSetting();
+            }
+        } catch (error) {
+            if (localWebhook) {
+                await this.persistWebhookSetting();
+            }
+        }
+    }
+
+    async persistWebhookSetting() {
+        this.saveConfig();
+
+        const webhookUrl = this.webhookUrl.value.trim();
+        try {
+            const res = await fetch(this.settingsApiBase, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                },
+                body: JSON.stringify({ webhook_url: webhookUrl }),
+            });
+
+            const data = await res.json();
+            if (!res.ok || data.status !== 'success') {
+                throw new Error(data.message || '保存 webhook 失败');
+            }
+        } catch (error) {
+            console.warn('保存平衡提醒 webhook 失败', error);
+        }
     }
 
     parseNumber(value, fallback) {
