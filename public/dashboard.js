@@ -636,7 +636,7 @@ function renderCategorySettingsList(categories) {
     if (!categories || categories.length === 0) {
         list.innerHTML = `
             <tr>
-                <td colspan="2" class="px-6 py-6 text-center text-slate-500 text-sm">暂无类别，请先创建一个类别</td>
+                <td colspan="3" class="px-6 py-6 text-center text-slate-500 text-sm">暂无类别，请先创建一个类别</td>
             </tr>`;
         return;
     }
@@ -645,10 +645,16 @@ function renderCategorySettingsList(categories) {
         const name = category.name || '';
         const id = normalizeCategoryId(category.id || category._id);
         const encodedId = encodeURIComponent(id);
+        const targetPct = Number(category.target_pct || 0).toFixed(2);
         return `
             <tr class="hover:bg-slate-800/30">
                 <td class="px-6 py-4 text-sm text-white">${name}</td>
                 <td class="px-6 py-4 text-right">
+                    <input type="number" min="0" step="0.1" value="${targetPct}" id="category-target-${encodedId}"
+                        class="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right text-sm text-white" />
+                </td>
+                <td class="px-6 py-4 text-right">
+                    <button type="button" onclick="window.saveCategoryTargetPct(decodeURIComponent('${encodedId}'), 'category-target-${encodedId}')" class="text-sky-400 mr-4">保存占比</button>
                     <button type="button" onclick="window.deleteCategory(decodeURIComponent('${encodedId}'))" class="text-red-500">删除</button>
                 </td>
             </tr>`;
@@ -683,8 +689,10 @@ async function loadCategories() {
 
 window.submitCategory = async () => {
     const input = document.getElementById('newCategoryName') || document.getElementById('category-name-dashboard');
+    const targetInput = document.getElementById('newCategoryTargetPct') || document.getElementById('category-target-pct-dashboard');
     const name = input ? input.value.trim() : '';
     if (!name) return alert('请输入类别名称');
+    const targetPct = targetInput ? (Number(targetInput.value) || 0) : 0;
 
     try {
         const res = await fetch('/api/asset-categories', {
@@ -694,11 +702,12 @@ window.submitCategory = async () => {
                 'Accept': 'application/json',
                 'X-CSRF-TOKEN': getCsrfToken()
             },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, target_pct: targetPct })
         });
 
         if (res.ok) {
             if (input) input.value = '';
+            if (targetInput) targetInput.value = '0';
             CacheManager.clear('assetCategories');
             await loadCategories();
         } else {
@@ -746,14 +755,21 @@ function getUncategorizedSymbols(data) {
     return allSymbols.filter((symbol) => !assignedSymbols.has(symbol));
 }
 
-async function updateCategorySymbols(categoryId, symbols) {
+async function updateCategorySymbols(categoryId, symbols, targetPct) {
     const normalizedId = normalizeCategoryId(categoryId);
     if (!normalizedId) {
         alert('保存失败：无效的类别 ID');
         return;
     }
 
-    const normalizedSymbols = normalizeSymbolList(Array.isArray(symbols) ? symbols.join(',') : symbols);
+    const shouldUpdateSymbols = typeof symbols !== 'undefined';
+    const normalizedSymbols = shouldUpdateSymbols ? normalizeSymbolList(Array.isArray(symbols) ? symbols.join(',') : symbols) : undefined;
+    const shouldUpdateTargetPct = typeof targetPct !== 'undefined';
+    const normalizedTargetPct = shouldUpdateTargetPct ? Math.max(0, Number(targetPct) || 0) : undefined;
+
+    const payload = {};
+    if (shouldUpdateSymbols) payload.symbols = normalizedSymbols;
+    if (shouldUpdateTargetPct) payload.target_pct = normalizedTargetPct;
 
     try {
         const res = await fetch(`/api/asset-categories/${encodeURIComponent(normalizedId)}`, {
@@ -763,7 +779,7 @@ async function updateCategorySymbols(categoryId, symbols) {
                 'Accept': 'application/json',
                 'X-CSRF-TOKEN': getCsrfToken()
             },
-            body: JSON.stringify({ symbols: normalizedSymbols })
+            body: JSON.stringify(payload)
         });
 
         if (!res.ok) {
@@ -774,7 +790,8 @@ async function updateCategorySymbols(categoryId, symbols) {
 
         const target = getCategoryById(normalizedId);
         if (target) {
-            target.symbols = normalizedSymbols;
+            if (shouldUpdateSymbols) target.symbols = normalizedSymbols;
+            if (shouldUpdateTargetPct) target.target_pct = normalizedTargetPct;
         }
 
         CacheManager.set('assetCategories', globalCategories || []);
@@ -792,6 +809,12 @@ window.saveCategorySymbols = async (id, inputId) => {
     const input = document.getElementById(inputId);
     const symbols = normalizeSymbolList(input ? input.value : '');
     await updateCategorySymbols(id, symbols);
+};
+
+window.saveCategoryTargetPct = async (id, inputId) => {
+    const input = document.getElementById(inputId);
+    const targetPct = Number(input ? input.value : 0) || 0;
+    await updateCategorySymbols(id, undefined, targetPct);
 };
 
 window.addSymbolToCategoryByInput = async (id, inputId) => {

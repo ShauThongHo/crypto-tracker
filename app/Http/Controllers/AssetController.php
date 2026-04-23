@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\{DB, Artisan, Http, Cache};
+use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use App\Models\{CapitalFlow, Asset};
+use App\Services\RebalanceService;
 
 class AssetController extends Controller
 {
@@ -93,6 +95,7 @@ class AssetController extends Controller
                     'id' => $id,
                     'name' => trim((string) ($item->name ?? '')),
                     'symbols' => $symbols,
+                    'target_pct' => round((float) ($item->target_pct ?? 0), 4),
                 ];
             })
             ->sortBy(function ($item) {
@@ -107,6 +110,7 @@ class AssetController extends Controller
     {
         $v = $request->validate([
             'name' => 'required|string|max:80',
+            'target_pct' => 'nullable|numeric|min:0|max:100',
         ]);
 
         $name = trim((string) $v['name']);
@@ -125,6 +129,7 @@ class AssetController extends Controller
         DB::table('asset_categories')->insert([
             'name' => $name,
             'symbols' => [],
+            'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
             'created_at' => now(),
         ]);
 
@@ -136,6 +141,7 @@ class AssetController extends Controller
         $v = $request->validate([
             'symbols' => 'array',
             'symbols.*' => 'string|max:30',
+            'target_pct' => 'nullable|numeric|min:0|max:100',
         ]);
 
         $symbols = collect($v['symbols'] ?? [])
@@ -149,10 +155,17 @@ class AssetController extends Controller
             ->values()
             ->all();
 
-        $updated = DB::table('asset_categories')->where('_id', $id)->update([
-            'symbols' => $symbols,
-            'updated_at' => now(),
-        ]);
+        $updateData = ['updated_at' => now()];
+
+        if ($request->has('symbols')) {
+            $updateData['symbols'] = $symbols;
+        }
+
+        if ($request->has('target_pct')) {
+            $updateData['target_pct'] = max(0, (float) ($v['target_pct'] ?? 0));
+        }
+
+        $updated = DB::table('asset_categories')->where('_id', $id)->update($updateData);
 
         if ($updated === 0) {
             return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
@@ -172,6 +185,261 @@ class AssetController extends Controller
         DB::table('asset_categories')->where('_id', $id)->delete();
 
         return response()->json(['status' => 'success']);
+    }
+
+    public function healthCheck()
+    {
+        try {
+            Artisan::call('app:sync-crypto-data');
+            $output = Artisan::output();
+            $autoNotify = $this->attemptHealthCheckAutoNotify();
+
+            Log::info('Health check completed', [
+                'output' => $output,
+                'auto_notify' => $autoNotify,
+            ]);
+
+            return response()->json([
+                'status' => 'alive',
+                'time' => now()->toDateTimeString(),
+                'command_output' => $output,
+                'auto_notify' => $autoNotify,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Health check failed', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    private function getBalanceAlertAutomationConfig(): array
+    {
+        return [
+            'enabled' => (bool) config('services.balance_alert.auto_notify_enabled', false),
+            'webhook_url' => (string) config('services.balance_alert.auto_notify_webhook_url', ''),
+            'prepare_threshold' => (float) config('services.balance_alert.auto_notify_prepare_threshold', config('services.balance_alert.prepare_threshold', 3.0)),
+            'rebalance_threshold' => (float) config('services.balance_alert.auto_notify_rebalance_threshold', config('services.balance_alert.rebalance_threshold', 5.0)),
+            'force_threshold' => (float) config('services.balance_alert.auto_notify_force_threshold', config('services.balance_alert.force_threshold', 7.5)),
+        ];
+    }
+
+    private function getStoredBalanceAlertCategoryAllocations(): array
+    {
+        return DB::table('asset_categories')->get()
+            ->map(function ($item, $index) {
+                $rawId = $item->_id ?? ($item->id ?? null);
+                $id = '';
+
+                if (is_object($rawId)) {
+                    if (isset($rawId->{'$oid'})) {
+                        $id = (string) $rawId->{'$oid'};
+                    } elseif (method_exists($rawId, '__toString')) {
+                        $id = (string) $rawId;
+                    }
+                } elseif ($rawId !== null) {
+                    $id = (string) $rawId;
+                }
+
+                $symbols = collect($item->symbols ?? [])
+                    ->map(function ($symbol) {
+                        return strtoupper(trim((string) $symbol));
+                    })
+                    ->filter(function ($symbol) {
+                        return $symbol !== '';
+                    })
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                return [
+                    'id' => $id ?: 'category-' . ($index + 1),
+                    'name' => trim((string) ($item->name ?? '')),
+                    'target_pct' => max(0, (float) ($item->target_pct ?? 0)),
+                    'symbols' => $symbols,
+                ];
+            })
+            ->filter(function ($item) {
+                return trim((string) ($item['name'] ?? '')) !== '';
+            })
+            ->sortBy(function ($item) {
+                return mb_strtolower(trim((string) ($item['name'] ?? '')));
+            })
+            ->values()
+            ->all();
+    }
+
+    private function resolveBalanceAlertAllocations(array $input): array
+    {
+        $rawAllocations = collect($input['allocations'] ?? []);
+
+        if ($rawAllocations->isEmpty() && !empty($input['category_allocations'])) {
+            $rawAllocations = collect($input['category_allocations']);
+        }
+
+        if ($rawAllocations->isEmpty()) {
+            $rawAllocations = collect($this->getStoredBalanceAlertCategoryAllocations());
+        }
+
+        return $rawAllocations->map(function ($item, $index) {
+            $symbols = collect($item['symbols'] ?? [])
+                ->map(function ($symbol) {
+                    return strtoupper(trim((string) $symbol));
+                })
+                ->filter(function ($symbol) {
+                    return $symbol !== '';
+                })
+                ->unique()
+                ->values()
+                ->all();
+
+            if (empty($symbols)) {
+                $name = trim((string) ($item['name'] ?? ''));
+                if ($name !== '') {
+                    $symbols = [strtoupper($name)];
+                }
+            }
+
+            $firstSymbol = $symbols[0] ?? strtoupper(trim((string) ($item['name'] ?? '')));
+            $fallbackName = count($symbols) === 1 ? $firstSymbol : '组合 ' . ($index + 1);
+
+            return [
+                'id' => trim((string) ($item['id'] ?? '')) ?: 'row-' . ($index + 1),
+                'name' => trim((string) ($item['name'] ?? '')) ?: $fallbackName,
+                'target_pct' => max(0, (float) ($item['target_pct'] ?? 0)),
+                'symbols' => $symbols,
+            ];
+        })->values()->all();
+    }
+
+    private function secondsUntilEndOfDay(): int
+    {
+        $now = Carbon::now('Asia/Kuala_Lumpur');
+        $seconds = $now->diffInSeconds($now->copy()->endOfDay(), false);
+        return max(60, (int) $seconds);
+    }
+
+    private function buildBalanceAlertDiscordContent(array $snapshot, array $prefixLines = []): string
+    {
+        $topItems = collect($snapshot['items'] ?? [])->take(5)->map(function ($item) {
+            $action = (string) ($item['advice_action'] ?? 'hold');
+            $actionText = $action === 'buy' ? '买入' : ($action === 'sell' ? '卖出' : '持有');
+
+            return sprintf(
+                "%s | 当前 %.2f%% | 目标 %.2f%% | 建议 %s $%s",
+                (string) ($item['name'] ?? $item['id'] ?? '未命名'),
+                (float) ($item['current_pct'] ?? 0),
+                (float) ($item['target_pct'] ?? 0),
+                $actionText,
+                number_format(abs((float) ($item['advice_usd'] ?? 0)), 2, '.', ',')
+            );
+        })->implode("\n");
+
+        $summaryText = (string) data_get($snapshot, 'advice.summary.text', $snapshot['message'] ?? '');
+
+        $content = array_merge($prefixLines, [
+            '【资产平衡提醒】',
+            '等级: ' . (string) ($snapshot['level'] ?? 'none'),
+            '时间: ' . (string) ($snapshot['now'] ?? now()->toDateTimeString()),
+            '最大偏离: ' . number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2) . '%',
+            '说明: ' . $summaryText,
+            '',
+            '偏离明细（Top 5）:',
+            $topItems !== '' ? $topItems : '暂无数据',
+        ]);
+
+        return implode("\n", $content);
+    }
+
+    private function attemptHealthCheckAutoNotify(): array
+    {
+        $config = $this->getBalanceAlertAutomationConfig();
+        if (!$config['enabled'] || trim($config['webhook_url']) === '') {
+            return [
+                'sent' => false,
+                'reason' => 'disabled_or_missing_webhook',
+            ];
+        }
+
+        $snapshot = $this->buildBalanceAlertSnapshotPayload($config + [
+            'category_allocations' => $this->getStoredBalanceAlertCategoryAllocations(),
+        ]);
+
+        $level = (string) ($snapshot['level'] ?? 'none');
+        if (!in_array($level, ['prepare', 'rebalance', 'force'], true)) {
+            $this->resetHealthCheckTriggerCounter();
+            return [
+                'sent' => false,
+                'reason' => 'not_triggered',
+                'level' => $level,
+            ];
+        }
+
+        $dateKey = Carbon::now('Asia/Kuala_Lumpur')->toDateString();
+        $countKey = "balance_alert:auto:trigger_count:{$dateKey}";
+        $sentKey = "balance_alert:auto:sent:{$dateKey}";
+        $ttl = $this->secondsUntilEndOfDay();
+
+        $currentCount = (int) Cache::get($countKey, 0) + 1;
+        Cache::put($countKey, $currentCount, $ttl);
+
+        if ($currentCount < 2) {
+            return [
+                'sent' => false,
+                'reason' => 'waiting_second_trigger',
+                'count' => $currentCount,
+                'level' => $level,
+            ];
+        }
+
+        if (Cache::has($sentKey)) {
+            return [
+                'sent' => false,
+                'reason' => 'already_sent_today',
+                'count' => $currentCount,
+                'level' => $level,
+            ];
+        }
+
+        $content = $this->buildBalanceAlertDiscordContent($snapshot, [
+            '【自动健康检查】',
+            '来源: /health-check',
+            '触发计数: ' . $currentCount . '/2',
+        ]);
+
+        $res = Http::timeout(10)->post($config['webhook_url'], [
+            'content' => $content,
+        ]);
+
+        if (!$res->successful()) {
+            return [
+                'sent' => false,
+                'reason' => 'webhook_failed',
+                'http_status' => $res->status(),
+                'response' => $res->body(),
+                'count' => $currentCount,
+                'level' => $level,
+            ];
+        }
+
+        Cache::put($sentKey, true, $ttl);
+
+        return [
+            'sent' => true,
+            'reason' => 'dispatched',
+            'count' => $currentCount,
+            'level' => $level,
+        ];
+    }
+
+    private function resetHealthCheckTriggerCounter(): void
+    {
+        $dateKey = Carbon::now('Asia/Kuala_Lumpur')->toDateString();
+        Cache::forget("balance_alert:auto:trigger_count:{$dateKey}");
     }
 
     /**
@@ -671,7 +939,261 @@ class AssetController extends Controller
     }
 
     // =========================================================================
-    // 6. 系统维护 (System Maintenance)
+    // 6. 平衡提醒 (Balance Alert)
+    // =========================================================================
+
+    public function getBalanceAlertSnapshot(Request $request)
+    {
+        $v = $request->validate([
+            'prepare_threshold' => 'nullable|numeric|min:0|max:100',
+            'rebalance_threshold' => 'nullable|numeric|min:0|max:100',
+            'force_threshold' => 'nullable|numeric|min:0|max:100',
+            'allocations' => 'nullable|array',
+            'allocations.*.id' => 'nullable|string|max:80',
+            'allocations.*.name' => 'nullable|string|max:60',
+            'allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
+            'allocations.*.symbols' => 'nullable|array',
+            'allocations.*.symbols.*' => 'string|max:30',
+            'target_allocations' => 'nullable|array',
+            'target_allocations.*.symbol' => 'required|string|max:30',
+            'target_allocations.*.target_pct' => 'required|numeric|min:0|max:100',
+            'category_allocations' => 'nullable|array',
+            'category_allocations.*.name' => 'required|string|max:60',
+            'category_allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
+            'category_allocations.*.symbols' => 'nullable|array',
+            'category_allocations.*.symbols.*' => 'string|max:30',
+        ]);
+
+        return response()->json($this->getCachedBalanceAlertSnapshotPayload($v));
+    }
+
+    private function getCachedBalanceAlertSnapshotPayload(array $input): array
+    {
+        $normalized = $this->normalizeSnapshotCacheInput($input);
+        $hash = md5(json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $cacheKey = 'balance_alert:snapshot:' . $hash;
+
+        return Cache::remember($cacheKey, 300, function () use ($input) {
+            return $this->buildBalanceAlertSnapshotPayload($input);
+        });
+    }
+
+    private function normalizeSnapshotCacheInput($value)
+    {
+        if (is_array($value)) {
+            $isAssoc = array_keys($value) !== range(0, count($value) - 1);
+            if ($isAssoc) {
+                ksort($value);
+                $normalized = [];
+                foreach ($value as $key => $item) {
+                    $normalized[$key] = $this->normalizeSnapshotCacheInput($item);
+                }
+
+                return $normalized;
+            }
+
+            return array_map(function ($item) {
+                return $this->normalizeSnapshotCacheInput($item);
+            }, $value);
+        }
+
+        if (is_float($value)) {
+            return (float) number_format($value, 8, '.', '');
+        }
+
+        return $value;
+    }
+
+    public function sendBalanceAlert(Request $request)
+    {
+        $v = $request->validate([
+            'webhook_url' => 'required|url',
+            'prepare_threshold' => 'nullable|numeric|min:0|max:100',
+            'rebalance_threshold' => 'nullable|numeric|min:0|max:100',
+            'force_threshold' => 'nullable|numeric|min:0|max:100',
+            'allocations' => 'nullable|array',
+            'allocations.*.id' => 'nullable|string|max:80',
+            'allocations.*.name' => 'nullable|string|max:60',
+            'allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
+            'allocations.*.symbols' => 'nullable|array',
+            'allocations.*.symbols.*' => 'string|max:30',
+            'target_allocations' => 'nullable|array',
+            'target_allocations.*.symbol' => 'required|string|max:30',
+            'target_allocations.*.target_pct' => 'required|numeric|min:0|max:100',
+            'category_allocations' => 'nullable|array',
+            'category_allocations.*.name' => 'required|string|max:60',
+            'category_allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
+            'category_allocations.*.symbols' => 'nullable|array',
+            'category_allocations.*.symbols.*' => 'string|max:30',
+        ]);
+
+        $prepareThreshold = (float) ($v['prepare_threshold'] ?? 3.0);
+        $rebalanceThreshold = (float) ($v['rebalance_threshold'] ?? 5.0);
+        $forceThreshold = (float) ($v['force_threshold'] ?? 7.5);
+
+        $snapshot = $this->buildBalanceAlertSnapshotPayload($v);
+        $content = $this->buildBalanceAlertDiscordContent($snapshot, [
+            '【资产平衡提醒】',
+            '阈值: 准备 ' . number_format($prepareThreshold, 2) . '% / 平衡 ' . number_format($rebalanceThreshold, 2) . '% / 强制 ' . number_format($forceThreshold, 2) . '%',
+        ]);
+
+        $res = Http::timeout(10)->post($v['webhook_url'], [
+            'content' => $content,
+        ]);
+
+        if (!$res->successful()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Discord webhook 发送失败',
+                'http_status' => $res->status(),
+                'response' => $res->body(),
+            ], 500);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'message' => '提醒已发送',
+            'snapshot' => $snapshot,
+        ]);
+    }
+
+    private function buildBalanceAlertSnapshotPayload(array $input): array
+    {
+        $prepareThreshold = (float) ($input['prepare_threshold'] ?? 3.0);
+        $rebalanceThreshold = (float) ($input['rebalance_threshold'] ?? 5.0);
+        $forceThreshold = (float) ($input['force_threshold'] ?? 7.5);
+        $assets = Asset::all();
+        $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
+
+        $normalizedAssets = $assets->map(function ($asset) use ($trackedTokens) {
+            $tokenInfo = $trackedTokens->get($asset->coingecko_id);
+            $symbol = strtoupper((string) ($asset->symbol ?? ($tokenInfo->symbol ?? $asset->token_name ?? 'UNKNOWN')));
+            $symbol = trim($symbol) !== '' ? trim($symbol) : 'UNKNOWN';
+
+            return [
+                'symbol' => $symbol,
+                'value' => is_numeric($asset->value_usd) ? (float) $asset->value_usd : 0,
+            ];
+        });
+
+        $totalValue = $normalizedAssets->sum('value');
+
+        $knownSymbols = $normalizedAssets->groupBy('symbol')->keys()->values();
+
+        $tokenValueMap = $normalizedAssets->groupBy('symbol')->map(function ($items) {
+            return (float) $items->sum('value');
+        });
+
+        $allocations = collect($this->resolveBalanceAlertAllocations($input));
+        $allocationRows = $allocations->map(function ($item) use ($tokenValueMap, $totalValue) {
+            $symbols = collect($item['symbols'] ?? [])->unique()->values();
+            $allocationValue = $symbols->sum(function ($symbol) use ($tokenValueMap) {
+                return (float) ($tokenValueMap->get($symbol, 0));
+            });
+
+            $weight = $totalValue > 0 ? ($allocationValue / $totalValue) * 100 : 0;
+
+            return [
+                'id' => (string) $item['id'],
+                'name' => (string) $item['name'],
+                'value' => round($allocationValue, 2),
+                'current_value' => (float) $allocationValue,
+                'weight_pct' => round($weight, 2),
+                'target_pct_input' => max(0, (float) ($item['target_pct'] ?? 0)),
+                'symbols' => $symbols->all(),
+            ];
+        })->values();
+
+        $inputTargetTotal = (float) $allocationRows->sum('target_pct_input');
+        $hasTargets = $allocationRows->isNotEmpty() && $inputTargetTotal > 0;
+        $defaultTargetPct = $allocationRows->count() > 0 ? (100 / $allocationRows->count()) : 0;
+
+        $normalizedAllocations = $allocationRows->map(function ($row) use ($hasTargets, $inputTargetTotal, $defaultTargetPct) {
+            $target = $hasTargets ? (($row['target_pct_input'] / $inputTargetTotal) * 100) : $defaultTargetPct;
+
+            return [
+                'id' => $row['id'],
+                'name' => $row['name'],
+                'current_value' => (float) $row['current_value'],
+                'target_pct' => (float) $target,
+                'symbols' => $row['symbols'],
+            ];
+        })->values()->all();
+
+        $rebalanceResult = app(RebalanceService::class)->calculateProportional($normalizedAllocations, (float) $totalValue, $rebalanceThreshold);
+        $items = collect($rebalanceResult['items'] ?? [])->sortByDesc('abs_deviation_pct')->values();
+        $maxDeviation = (float) ($rebalanceResult['max_deviation_pct'] ?? ($items->isEmpty() ? 0 : (float) ($items->first()['abs_deviation_pct'] ?? 0)));
+        $normalizedTargetTotal = (float) ($rebalanceResult['normalized_total_pct'] ?? 0);
+        $now = Carbon::now('Asia/Kuala_Lumpur');
+        $isLateMonth = $now->day >= 21;
+        $isQuarterRebalanceMonth = in_array($now->month, [1, 4, 7, 10], true);
+        $inRebalanceWindow = $isLateMonth && $isQuarterRebalanceMonth;
+
+        $level = 'none';
+        $message = '当前偏离在安全范围内。';
+
+        if ($maxDeviation >= $forceThreshold) {
+            $level = 'force';
+            $message = '偏离超过强制阈值，建议立即强制平衡。';
+        } elseif ($maxDeviation >= $rebalanceThreshold && $inRebalanceWindow) {
+            $level = 'rebalance';
+            $message = '偏离超过平衡阈值且处于季度下旬窗口，建议执行平衡。';
+        } elseif ($maxDeviation >= $prepareThreshold) {
+            $level = 'prepare';
+            $message = '偏离超过准备阈值，建议提前准备资金。';
+        }
+
+        return [
+            'status' => 'success',
+            'now' => $now->toDateTimeString(),
+            'items' => $items,
+            'known_symbols' => $knownSymbols,
+            'window' => [
+                'is_late_month' => $isLateMonth,
+                'is_quarter_rebalance_month' => $isQuarterRebalanceMonth,
+                'in_rebalance_window' => $inRebalanceWindow,
+                'rule' => '每年 1/4/7/10 月下旬（21 号至月末）',
+            ],
+            'thresholds' => [
+                'prepare_threshold' => $prepareThreshold,
+                'rebalance_threshold' => $rebalanceThreshold,
+                'force_threshold' => $forceThreshold,
+            ],
+            'portfolio' => [
+                'total_value' => round((float) $totalValue, 2),
+                'allocation_count' => $allocationRows->count(),
+                'default_target_pct' => round($defaultTargetPct, 2),
+                'max_deviation_pct' => round($maxDeviation, 2),
+                'target_input_total_pct' => round($inputTargetTotal, 2),
+                'target_normalized_total_pct' => round($normalizedTargetTotal, 2),
+            ],
+            'advice' => [
+                'threshold_pct' => $rebalanceThreshold,
+                'k_factor' => (float) ($rebalanceResult['k_factor'] ?? 1.0),
+                'normalized_total_pct' => (float) $normalizedTargetTotal,
+                'max_deviation_pct' => $maxDeviation,
+                'summary' => $rebalanceResult['summary'] ?? [
+                    'buy_usd' => 0,
+                    'sell_usd' => 0,
+                    'net_usd' => 0,
+                    'text' => '无需调仓',
+                ],
+            ],
+            'level' => $level,
+            'message' => $message,
+            'allocations' => $allocationRows->map(function ($row) {
+                return [
+                    'id' => $row['id'],
+                    'name' => $row['name'],
+                    'target_pct' => $row['target_pct_input'],
+                    'symbols' => $row['symbols'],
+                ];
+            })->values(),
+        ];
+    }
+
+    // =========================================================================
+    // 7. 系统维护 (System Maintenance)
     // =========================================================================
 
     public function clearCapitalFlows()

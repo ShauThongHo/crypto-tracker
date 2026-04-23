@@ -37,6 +37,15 @@
             出入金
         </a>
 
+        <a href="/balance-alert"
+            class="flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all {{ request()->is('balance-alert') ? 'nav-active' : 'nav-inactive' }}">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"></path>
+            </svg>
+            平衡提醒
+        </a>
+
         <a href="/settings"
             class="flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-4 px-2 md:px-5 py-2 md:py-3.5 rounded-xl font-medium text-[10px] md:text-sm w-full transition-all {{ request()->is('settings') ? 'nav-active' : 'nav-inactive' }}">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

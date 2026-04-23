@@ -36,4 +36,15 @@ return [
         'proxy_key' => env('CG_PROXY_KEY'),
     ],
 
+    'balance_alert' => [
+        'auto_notify_enabled' => env('BALANCE_ALERT_AUTO_NOTIFY_ENABLED', false),
+        'auto_notify_webhook_url' => env('BALANCE_ALERT_AUTO_NOTIFY_WEBHOOK_URL'),
+        'auto_notify_prepare_threshold' => env('BALANCE_ALERT_AUTO_NOTIFY_PREPARE_THRESHOLD', 3),
+        'auto_notify_rebalance_threshold' => env('BALANCE_ALERT_AUTO_NOTIFY_REBALANCE_THRESHOLD', 5),
+        'auto_notify_force_threshold' => env('BALANCE_ALERT_AUTO_NOTIFY_FORCE_THRESHOLD', 7.5),
+        'prepare_threshold' => env('BALANCE_ALERT_PREPARE_THRESHOLD', 3),
+        'rebalance_threshold' => env('BALANCE_ALERT_REBALANCE_THRESHOLD', 5),
+        'force_threshold' => env('BALANCE_ALERT_FORCE_THRESHOLD', 7.5),
+    ],
+
 ];

@@ -108,15 +108,18 @@
                         <thead class="bg-slate-800/50 text-slate-500 text-[10px] uppercase font-bold tracking-wider">
                             <tr>
                                 <th class="px-6 py-4">类别名称</th>
+                                <th class="px-6 py-4 text-right">目标占比</th>
                                 <th class="px-6 py-4 text-right">操作</th>
                             </tr>
                         </thead>
                         <tbody id="asset-categories-list" class="divide-y divide-slate-800"></tbody>
                     </table>
                     <div id="addCategoryRow" class="hidden p-6 bg-slate-800/30 border-t border-slate-700">
-                        <div class="flex gap-4">
+                        <div class="flex gap-4 items-center">
                             <input type="text" id="newCategoryName" placeholder="例如: 激进 / 稳健 / 现货"
                                 class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <input type="number" id="newCategoryTargetPct" min="0" step="0.1" value="0" placeholder="目标占比"
+                                class="w-36 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white text-right">
                             <button type="button" onclick="submitCategory()" class="bg-sky-500 text-white px-6 py-2 rounded-xl">保存类别</button>
                         </div>
                     </div>
