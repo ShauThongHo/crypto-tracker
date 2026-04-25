@@ -19,6 +19,20 @@
                 </div>
             </div>
 
+            <div class="bg-[#0f172a] border border-slate-800 p-6 rounded-2xl flex justify-between items-center">
+                <div>
+                    <h4 class="text-white font-medium">隐藏低价值资产</h4>
+                    <p class="text-sm text-slate-500 mt-1">开启后会屏蔽单个价值低于 0.01 USD 的资产（手动与 API 同步资产都会生效）</p>
+                </div>
+                <label class="inline-flex items-center gap-3 cursor-pointer">
+                    <span id="low-value-filter-status" class="text-xs text-slate-400">关闭</span>
+                    <input id="low-value-filter-toggle" type="checkbox" class="sr-only">
+                    <span id="low-value-filter-track" class="w-12 h-6 bg-slate-700 rounded-full relative transition-all">
+                        <span id="low-value-filter-knob" class="w-5 h-5 bg-white rounded-full absolute top-0.5 left-0.5 transition-all"></span>
+                    </span>
+                </label>
+            </div>
+
             <div>
                 <div class="flex justify-between items-center mb-6">
                     <h3 class="text-xl font-bold text-white">📡 代币同步管理</h3>

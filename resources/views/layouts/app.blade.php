@@ -10,11 +10,15 @@
     <link rel="stylesheet" href="{{ asset('style.css') }}">
     <style>
         body { background-color: #020617; color: #f8fafc; font-family: 'Inter', sans-serif; overflow: hidden; }
-        .bento-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; max-width: 1400px; }
+        .bento-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; width: 100%; max-width: none; }
         .full-row-card { grid-column: span 2; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
         .bento-card { 
             background: #0f172a; border: 1px solid #1e293b; border-radius: 24px; 
             padding: 1.5rem; transition: all 0.3s ease; 
+        }
+        @media (max-width: 767px) {
+            .bento-grid { grid-template-columns: 1fr; }
+            .full-row-card { grid-column: span 1; }
         }
         .bento-card:hover { border-color: #38bdf8; transform: translateY(-2px); }
         /* 侧边栏活动状态 */

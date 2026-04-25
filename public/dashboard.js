@@ -113,7 +113,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadCategories().catch(e => console.error("类别数据加载失败:", e)),
         loadTrackedTokens().catch(e => console.error("追踪代币加载失败:", e)),
         loadWallets().catch(e => console.error("钱包加载失败:", e)),
-        loadExchangeAccounts().catch(e => console.error("交易所账户加载失败:", e))
+        loadExchangeAccounts().catch(e => console.error("交易所账户加载失败:", e)),
+        loadLowValueAssetFilterSetting().catch(e => console.error("低价值资产过滤设置加载失败:", e))
     ]).then(() => {
         console.log("✅ 所有后台数据预加载完毕");
     });
@@ -589,6 +590,105 @@ const CacheManager = {
         });
     }
 };
+
+function applyLowValueFilterToggleUi(enabled) {
+    const status = document.getElementById('low-value-filter-status');
+    const track = document.getElementById('low-value-filter-track');
+    const knob = document.getElementById('low-value-filter-knob');
+
+    if (status) {
+        status.textContent = enabled ? '开启' : '关闭';
+        status.className = enabled ? 'text-xs text-sky-300' : 'text-xs text-slate-400';
+    }
+
+    if (track) {
+        track.classList.toggle('bg-slate-700', !enabled);
+        track.classList.toggle('bg-sky-500', enabled);
+    }
+
+    if (knob) {
+        knob.classList.toggle('translate-x-6', enabled);
+    }
+}
+
+function getLowValueFilterLocalState() {
+    const raw = String(localStorage.getItem('hide_low_value_assets_enabled') || '').toLowerCase();
+    return raw === '1' || raw === 'true';
+}
+
+function setLowValueFilterLocalState(enabled) {
+    localStorage.setItem('hide_low_value_assets_enabled', enabled ? '1' : '0');
+}
+
+async function saveLowValueAssetFilterSetting(enabled) {
+    const res = await fetch('/api/balance-alert/settings', {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': getCsrfToken(),
+        },
+        body: JSON.stringify({ hide_low_value_assets: !!enabled }),
+    });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || '保存低价值资产过滤设置失败');
+    }
+
+    return res.json().catch(() => ({}));
+}
+
+async function loadLowValueAssetFilterSetting() {
+    const toggle = document.getElementById('low-value-filter-toggle');
+    if (!toggle) return;
+
+    const localEnabled = getLowValueFilterLocalState();
+    toggle.checked = localEnabled;
+    applyLowValueFilterToggleUi(localEnabled);
+
+    try {
+        const res = await fetch('/api/balance-alert/settings', {
+            headers: { 'Accept': 'application/json' },
+        });
+        if (!res.ok) {
+            throw new Error('读取低价值资产过滤设置失败');
+        }
+
+        const payload = await res.json().catch(() => ({}));
+        const enabled = !!payload?.data?.hide_low_value_assets;
+
+        toggle.checked = enabled;
+        applyLowValueFilterToggleUi(enabled);
+        setLowValueFilterLocalState(enabled);
+    } catch (error) {
+        toggle.checked = localEnabled;
+        applyLowValueFilterToggleUi(localEnabled);
+    }
+
+    toggle.onchange = async () => {
+        const nextValue = !!toggle.checked;
+        toggle.disabled = true;
+        applyLowValueFilterToggleUi(nextValue);
+
+        try {
+            await saveLowValueAssetFilterSetting(nextValue);
+            setLowValueFilterLocalState(nextValue);
+            applyLowValueFilterToggleUi(nextValue);
+
+            CacheManager.clear('portfolioData');
+            CacheManager.clearAllSnapshotCache();
+            CacheManager.clear('statsData');
+            await loadAllData();
+        } catch (error) {
+            toggle.checked = !nextValue;
+            applyLowValueFilterToggleUi(!nextValue);
+            alert(error.message || '保存失败');
+        } finally {
+            toggle.disabled = false;
+        }
+    };
+}
 
 async function loadAllData() {
     // 🎯 第一步：立即从缓存加载并渲染（如果有缓存）

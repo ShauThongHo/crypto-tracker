@@ -12,6 +12,8 @@ use App\Services\{RebalanceService, CexSyncService};
 
 class AssetController extends Controller
 {
+    private const LOW_VALUE_ASSET_FILTER_THRESHOLD_USD = 0.01;
+
     // =========================================================================
     // 1. 核心看板数据 (Dashboard Data)
     // =========================================================================
@@ -27,6 +29,12 @@ class AssetController extends Controller
             ->get();
 
         $assets = $manualAssets->concat($autoAssets);
+        if ($this->shouldHideLowValueAssets()) {
+            $assets = $assets->filter(function ($asset) {
+                return (float) ($asset->value_usd ?? 0) >= self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD;
+            })->values();
+        }
+
         $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
 
         $totalValue = $assets->sum(function ($item) {
@@ -336,6 +344,8 @@ class AssetController extends Controller
             'status' => 'success',
             'data' => [
                 'webhook_url' => $this->getStoredBalanceAlertWebhookUrl(),
+                'hide_low_value_assets' => $this->getStoredHideLowValueAssetsEnabled(),
+                'hide_low_value_assets_threshold_usd' => self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD,
             ],
         ]);
     }
@@ -344,15 +354,27 @@ class AssetController extends Controller
     {
         $v = $request->validate([
             'webhook_url' => 'nullable|url',
+            'hide_low_value_assets' => 'nullable|boolean',
         ]);
 
-        $webhookUrl = trim((string) ($v['webhook_url'] ?? ''));
-        $this->storeBalanceAlertWebhookUrl($webhookUrl);
+        $webhookUrl = $this->getStoredBalanceAlertWebhookUrl();
+        if ($request->has('webhook_url')) {
+            $webhookUrl = trim((string) ($v['webhook_url'] ?? ''));
+            $this->storeBalanceAlertWebhookUrl($webhookUrl);
+        }
+
+        $hideLowValueAssets = $this->getStoredHideLowValueAssetsEnabled();
+        if ($request->has('hide_low_value_assets')) {
+            $hideLowValueAssets = (bool) ($v['hide_low_value_assets'] ?? false);
+            $this->storeHideLowValueAssetsEnabled($hideLowValueAssets);
+        }
 
         return response()->json([
             'status' => 'success',
             'data' => [
                 'webhook_url' => $webhookUrl,
+                'hide_low_value_assets' => $hideLowValueAssets,
+                'hide_low_value_assets_threshold_usd' => self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD,
             ],
         ]);
     }
@@ -374,6 +396,34 @@ class AssetController extends Controller
             ['key' => 'balance_alert_webhook_url'],
             [
                 'value' => $webhookUrl,
+                'updated_at' => now(),
+                'created_at' => now(),
+            ]
+        );
+    }
+
+    private function shouldHideLowValueAssets(): bool
+    {
+        return $this->getStoredHideLowValueAssetsEnabled();
+    }
+
+    private function getStoredHideLowValueAssetsEnabled(): bool
+    {
+        $row = DB::table('app_settings')->where('key', 'hide_low_value_assets_enabled')->first();
+        if (!$row) {
+            return false;
+        }
+
+        $raw = strtolower(trim((string) ($row->value ?? '0')));
+        return in_array($raw, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function storeHideLowValueAssetsEnabled(bool $enabled): void
+    {
+        DB::table('app_settings')->updateOrInsert(
+            ['key' => 'hide_low_value_assets_enabled'],
+            [
+                'value' => $enabled ? '1' : '0',
                 'updated_at' => now(),
                 'created_at' => now(),
             ]
@@ -518,6 +568,9 @@ class AssetController extends Controller
             ];
         }
 
+        // 23:59 自动清空当日触发计数，避免跨日误累计。
+        $this->resetHealthCheckTriggerCounterAtDayEndIfNeeded();
+
         $snapshot = $this->buildBalanceAlertSnapshotPayload($config + [
             'category_allocations' => $this->getStoredBalanceAlertCategoryAllocations(),
         ]);
@@ -617,6 +670,23 @@ class AssetController extends Controller
         Cache::forget("balance_alert:auto:{$dateKey}:prepare:streak");
         Cache::forget("balance_alert:auto:{$dateKey}:rebalance:streak");
         Cache::forget("balance_alert:auto:{$dateKey}:force:streak");
+    }
+
+    private function resetHealthCheckTriggerCounterAtDayEndIfNeeded(): void
+    {
+        $now = Carbon::now('Asia/Kuala_Lumpur');
+        if ((int) $now->format('Hi') < 2359) {
+            return;
+        }
+
+        $dateKey = $now->toDateString();
+        $flagKey = "balance_alert:auto:{$dateKey}:day_end_counter_reset";
+        if (Cache::has($flagKey)) {
+            return;
+        }
+
+        $this->resetHealthCheckTriggerCounter();
+        Cache::put($flagKey, true, $this->secondsUntilEndOfDay());
     }
 
     private function determineHealthCheckAutoNotifyLevel(array $snapshot, array $config): array
@@ -749,9 +819,17 @@ class AssetController extends Controller
                     'value' => (float) ($snap->total_value_usd ?? 0),
                 ];
             })
-            ->values();
+            ->sortBy('time')
+            ->groupBy(function ($row) {
+                return $row['time']->copy()->format('Y-m-d H:i:s');
+            })
+            ->map(function ($rows) {
+                return $rows->last();
+            })
+            ->values()
+            ->all();
 
-        if ($normalizedSnapshots->isEmpty()) {
+        if (empty($normalizedSnapshots)) {
             return [
                 'times' => [],
                 'values' => [],
@@ -785,8 +863,13 @@ class AssetController extends Controller
             }
         } elseif ($range === '30D' || $range === 'ALL') {
             $granularity = 'day';
+            $firstSnapshotTime = $normalizedSnapshots[0]['time'] ?? null;
+            if (!$firstSnapshotTime instanceof Carbon) {
+                $firstSnapshotTime = Carbon::parse((string) $firstSnapshotTime)->setTimezone('Asia/Kuala_Lumpur');
+            }
+
             $start = $range === 'ALL'
-                ? $normalizedSnapshots->first()['time']->copy()->startOfDay()
+                ? $firstSnapshotTime->copy()->startOfDay()
                 : $now->copy()->subDays(30)->startOfDay();
             $cursor = $start;
             while ($cursor->lte($now)) {
@@ -794,7 +877,7 @@ class AssetController extends Controller
                 $cursor->addDay();
             }
         } else {
-            $bucketTimes = $normalizedSnapshots->pluck('time')->all();
+            $bucketTimes = collect($normalizedSnapshots)->pluck('time')->all();
         }
 
         $times = [];
@@ -804,12 +887,23 @@ class AssetController extends Controller
         $flowIndex = 0;
         $latestSnapshot = null;
         $netInvested = 0;
-        $snapshotCount = $normalizedSnapshots->count();
+        $snapshotCount = count($normalizedSnapshots);
         $flowCount = $normalizedFlows->count();
 
         foreach ($bucketTimes as $bucketTime) {
-            while ($snapshotIndex < $snapshotCount && $normalizedSnapshots[$snapshotIndex]['time']->lte($bucketTime)) {
-                $latestSnapshot = $normalizedSnapshots[$snapshotIndex];
+            while ($snapshotIndex < $snapshotCount) {
+                $snapshotRow = $normalizedSnapshots[$snapshotIndex] ?? null;
+                $snapshotTime = $snapshotRow['time'] ?? null;
+                if (!$snapshotTime instanceof Carbon) {
+                    $snapshotIndex++;
+                    continue;
+                }
+
+                if (!$snapshotTime->lte($bucketTime)) {
+                    break;
+                }
+
+                $latestSnapshot = $snapshotRow;
                 $snapshotIndex++;
             }
 
@@ -1172,6 +1266,11 @@ class AssetController extends Controller
     {
         $assets = CexSyncedAsset::query()
             ->get()
+            ->when($this->shouldHideLowValueAssets(), function ($collection) {
+                return $collection->filter(function ($asset) {
+                    return (float) ($asset->value_usd ?? 0) >= self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD;
+                })->values();
+            })
             ->sortByDesc(function ($asset) {
                 return (float) ($asset->value_usd ?? 0);
             })
@@ -1531,15 +1630,32 @@ class AssetController extends Controller
 
     private function getBalanceAlertAllocationsFingerprint(): string
     {
-        $rows = DB::table('asset_categories')->get();
+        $categoryRows = DB::table('asset_categories')->get();
+        $manualAssetRows = DB::table('assets')->get();
+        $cexAssetRows = DB::table('cex_synced_assets')->get();
+        $hideLowValueAssets = $this->shouldHideLowValueAssets() ? '1' : '0';
 
-        $count = $rows->count();
-        $lastUpdated = $rows->map(function ($row) {
+        $count = $categoryRows->count();
+        $lastUpdated = $categoryRows->map(function ($row) {
             $updated = $row->updated_at ?? $row->created_at ?? null;
             return $updated ? (string) $updated : '';
         })->filter()->sort()->last();
 
-        return $count . ':' . ($lastUpdated ?? 'none');
+        $manualFingerprint = $manualAssetRows->count() . ':' . (
+            $manualAssetRows->map(function ($row) {
+                $updated = $row->updated_at ?? $row->created_at ?? null;
+                return $updated ? (string) $updated : '';
+            })->filter()->sort()->last() ?? 'none'
+        );
+
+        $cexFingerprint = $cexAssetRows->count() . ':' . (
+            $cexAssetRows->map(function ($row) {
+                $updated = $row->last_synced_at ?? $row->updated_at ?? $row->created_at ?? null;
+                return $updated ? (string) $updated : '';
+            })->filter()->sort()->last() ?? 'none'
+        );
+
+        return $count . ':' . ($lastUpdated ?? 'none') . '|m:' . $manualFingerprint . '|c:' . $cexFingerprint . '|h:' . $hideLowValueAssets;
     }
 
     private function normalizeSnapshotCacheInput($value)
@@ -1629,6 +1745,12 @@ class AssetController extends Controller
         $manualAssets = Asset::all();
         $autoAssets = CexSyncedAsset::query()->where('is_active', true)->get();
         $assets = $manualAssets->concat($autoAssets);
+        if ($this->shouldHideLowValueAssets()) {
+            $assets = $assets->filter(function ($asset) {
+                return (float) ($asset->value_usd ?? 0) >= self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD;
+            })->values();
+        }
+
         $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
 
         $normalizedAssets = $assets->map(function ($asset) use ($trackedTokens) {

@@ -23,8 +23,8 @@ class SyncCryptoData extends Command
         $alignedTime = Carbon::createFromTimestamp($alignedTimestamp);
         $slotKey = 'synced_slot_' . $alignedTimestamp;
 
-        // --- 2. 检查是否已经跑过这个槽位 ---
-        if (Cache::has($slotKey)) {
+        // --- 2. 原子占位，避免并发重复执行同一槽位 ---
+        if (!Cache::add($slotKey, 'running', 600)) {
             $this->info("⏭️ 槽位 " . $alignedTime->format('H:i:s') . " 已经同步过，跳过。");
             return;
         }
@@ -109,11 +109,15 @@ class SyncCryptoData extends Command
 
                 $totalPortfolioValue += (float) $cexPortfolioValue;
 
-                DB::table('asset_snapshots')->insert([
-                    'total_value_usd' => $totalPortfolioValue,
-                    'snapshot_time' => $alignedTime, 
-                    'created_at' => now(), 
-                ]);
+                DB::table('asset_snapshots')->updateOrInsert(
+                    ['snapshot_time' => $alignedTime],
+                    [
+                        'total_value_usd' => $totalPortfolioValue,
+                        'snapshot_time' => $alignedTime,
+                        'updated_at' => now(),
+                        'created_at' => now(),
+                    ]
+                );
 
                 // --- 4. 锁定该槽位并更新成功状态 ---
                 Cache::put($slotKey, true, 600); 
@@ -128,6 +132,8 @@ class SyncCryptoData extends Command
                 throw new \Exception("中转请求失败 (状态码: $status), 详情: $errorBody");
             }
         } catch (\Exception $e) {
+            // 失败时释放槽位，允许同一时间段重试。
+            Cache::forget($slotKey);
             Cache::put('sync_status', 'error', 3600);
             $this->error('❌ 同步出错: ' . $e->getMessage());
         }
