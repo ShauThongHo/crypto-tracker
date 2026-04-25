@@ -17,10 +17,13 @@ class Asset extends Model
 
     protected $fillable = [
         'source_name',
-        'network',
+        'source_type',
         'token_name',
         'symbol',       // 👈 加上这个
         'label',        // 👈 加上这个
+        'label_id',
+        'source_type',
+        'label_id',
         'coingecko_id',
         'token_amount',
         'value_usd',

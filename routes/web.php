@@ -48,6 +48,13 @@ Route::prefix('api')->group(function () {
     Route::get('/assets/snapshots', [AssetController::class, 'getSnapshots']);
     Route::get('/sync-status', [AssetController::class, 'getSyncStatus']);
     Route::get('/exchange-rate', [AssetController::class, 'getExchangeRate']);
+    Route::get('/exchange-accounts', [AssetController::class, 'getExchangeAccounts']);
+    Route::post('/exchange-accounts', [AssetController::class, 'storeExchangeAccount']);
+    Route::put('/exchange-accounts/{id}', [AssetController::class, 'updateExchangeAccount']);
+    Route::delete('/exchange-accounts/{id}', [AssetController::class, 'deleteExchangeAccount']);
+    Route::post('/cex/sync', [AssetController::class, 'syncCexAssets']);
+    Route::get('/cex/assets', [AssetController::class, 'getCexAssets']);
+    Route::delete('/cex/assets/{id}', [AssetController::class, 'deleteCexAsset']);
     
     Route::post('/assets/sync', [AssetController::class, 'manualSync']);
     Route::post('/assets', [AssetController::class, 'storeAsset']);

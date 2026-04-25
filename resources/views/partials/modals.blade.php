@@ -3,7 +3,7 @@
         <form id="addAssetForm" onsubmit="submitNewAsset(event)" class="p-6 space-y-4">
             <h3 class="text-xl font-bold text-white mb-4">录入新资产</h3>
             
-            <div class="relative">
+            <div id="manual-source-row" class="relative">
                 <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">钱包 / 来源</label>
                 <input type="text" id="add_source_name" oninput="searchSource(this.value)" autocomplete="off" 
                        class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white focus:border-sky-500 outline-none transition-all" 
@@ -34,6 +34,7 @@
                 <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1 ml-1">备注 (Label)</label>
                 <input type="text" id="add_label" placeholder="如: Staked" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none">
             </div>
+
 
             <div class="flex gap-3 mt-6">
                 <button type="button" onclick="closeAddModal()" class="flex-1 px-4 py-3 rounded-xl bg-slate-800 text-white font-bold">取消</button>

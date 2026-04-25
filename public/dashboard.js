@@ -112,7 +112,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadHistoryData().catch(e => console.error("历史日历数据加载失败:", e)),
         loadCategories().catch(e => console.error("类别数据加载失败:", e)),
         loadTrackedTokens().catch(e => console.error("追踪代币加载失败:", e)),
-        loadWallets().catch(e => console.error("钱包加载失败:", e))
+        loadWallets().catch(e => console.error("钱包加载失败:", e)),
+        loadExchangeAccounts().catch(e => console.error("交易所账户加载失败:", e))
     ]).then(() => {
         console.log("✅ 所有后台数据预加载完毕");
     });
@@ -135,6 +136,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // --- 弹窗控制 ---
 window.openAddModal = async function () {
+    document.getElementById('addAssetForm')?.reset();
     const modal = document.getElementById('addAssetModal');
     modal.classList.remove('hidden');
     setTimeout(() => modal.classList.add('opacity-100'), 10);
@@ -146,7 +148,12 @@ window.closeAddModal = () => {
     setTimeout(() => modal.classList.add('hidden'), 300);
 };
 
-window.openEditModal = (id, amount, symbol, network, source, label) => {
+window.openEditModal = (id, amount, symbol, network, source, label, labelId = '', isAutoSynced = false) => {
+    if (String(isAutoSynced) === 'true' || isAutoSynced === true) {
+        alert('自动同步资产不支持手动编辑，请在设置页调整 API 账户后重新同步。');
+        return;
+    }
+
     document.getElementById('edit_asset_id').value = id;
     document.getElementById('edit_token_amount').value = amount;
     document.getElementById('edit_network').value = network;
@@ -319,6 +326,22 @@ window.deleteAsset = async (id) => {
     }
 };
 
+window.deleteCexAsset = async (id) => {
+    if (!confirm('确认移除此自动同步资产？此操作仅删除当前记录，不会删除交易所账户。')) return;
+    const res = await fetch(`/api/cex/assets/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+    });
+
+    if (res.ok) {
+        CacheManager.clear('portfolioData');
+        await loadAllData();
+    } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '删除失败');
+    }
+};
+
 window.submitWallet = async () => {
     const name = document.getElementById('newWalletName').value;
     const type = document.getElementById('newWalletType').value;
@@ -342,6 +365,181 @@ window.deleteWallet = async (id) => {
     // 🎯 清除缓存
     CacheManager.clear('wallets');
     loadWallets();
+};
+
+async function loadExchangeAccounts() {
+    const cachedAccounts = CacheManager.get('exchangeAccounts');
+    const list = document.getElementById('exchange-accounts-list');
+    if (list && cachedAccounts && Array.isArray(cachedAccounts)) {
+        renderExchangeAccounts(cachedAccounts, list);
+    }
+
+    try {
+        const res = await fetch('/api/exchange-accounts');
+        const accounts = await res.json();
+        if (!list) return;
+
+        CacheManager.set('exchangeAccounts', accounts);
+        renderExchangeAccounts(accounts, list);
+    } catch (e) {
+        console.error('交易所账户加载失败', e);
+    }
+}
+
+function renderExchangeAccounts(accounts, list) {
+    if (!accounts || accounts.length === 0) {
+        list.innerHTML = '<tr><td colspan="7" class="px-6 py-6 text-center text-slate-500 text-sm">尚未添加交易所 API 账户</td></tr>';
+        return;
+    }
+
+    list.innerHTML = accounts.map((acc) => {
+        const statusColor = acc.last_sync_status === 'success' ? 'text-emerald-400' : (acc.last_sync_status === 'error' ? 'text-rose-400' : 'text-slate-400');
+        const lastError = (acc.last_error || '').trim();
+        const errorText = lastError ? lastError : '-';
+        return `
+            <tr class="hover:bg-slate-800/30">
+                <td class="px-6 py-4 text-sm text-white uppercase">${acc.exchange}</td>
+                <td class="px-6 py-4 text-sm text-white">${acc.label}</td>
+                <td class="px-6 py-4 text-sm text-slate-300 font-mono">${acc.api_key_masked || '-'}</td>
+                <td class="px-6 py-4 text-sm ${statusColor}">${acc.enabled ? '启用' : '停用'} / ${acc.last_sync_status || 'idle'}</td>
+                <td class="px-6 py-4 text-sm text-slate-500">${acc.last_sync_at || '-'}</td>
+                <td class="px-6 py-4 text-sm text-slate-500 max-w-[240px] truncate" title="${errorText.replace(/"/g, '&quot;')}">${errorText}</td>
+                <td class="px-6 py-4 text-right">
+                    <button onclick="window.triggerCexSync('${acc.exchange}')" class="text-sky-400 mr-4">同步</button>
+                    <button onclick="window.toggleExchangeAccount('${acc.id}', ${acc.enabled ? 'false' : 'true'})" class="text-amber-400 mr-4">${acc.enabled ? '停用' : '启用'}</button>
+                    <button onclick="window.deleteExchangeAccount('${acc.id}')" class="text-red-500">删除</button>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+window.submitExchangeAccount = async () => {
+    const exchange = document.getElementById('newExchangeName')?.value
+        || document.getElementById('exchangeAccountExchange')?.value
+        || 'okx';
+    const label = document.getElementById('newExchangeLabel')?.value
+        || document.getElementById('exchangeAccountLabel')?.value
+        || '';
+    const api_key = document.getElementById('newExchangeApiKey')?.value
+        || document.getElementById('exchangeApiKey')?.value
+        || '';
+    const api_secret = document.getElementById('newExchangeApiSecret')?.value
+        || document.getElementById('exchangeApiSecret')?.value
+        || '';
+    const passphrase = document.getElementById('newExchangePassphrase')?.value
+        || document.getElementById('exchangePassphrase')?.value
+        || '';
+    const enabled = !!(
+        document.getElementById('newExchangeEnabled')?.checked
+        ?? document.getElementById('exchangeEnabled')?.checked
+    );
+
+    if (!label || !api_key || !api_secret) {
+        alert('请填写账户标签、API Key 和 API Secret');
+        return;
+    }
+
+    const res = await fetch('/api/exchange-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
+        body: JSON.stringify({ exchange, label, api_key, api_secret, passphrase, enabled })
+    });
+
+    if (res.ok) {
+        CacheManager.clear('exchangeAccounts');
+        const idsToClear = [
+            'newExchangeLabel',
+            'newExchangeApiKey',
+            'newExchangeApiSecret',
+            'newExchangePassphrase',
+            'exchangeAccountLabel',
+            'exchangeApiKey',
+            'exchangeApiSecret',
+            'exchangePassphrase',
+        ];
+        idsToClear.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        await loadExchangeAccounts();
+        alert('交易所账户已保存');
+    } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '保存失败');
+    }
+};
+
+window.deleteExchangeAccount = async (id) => {
+    if (!confirm('确定删除这个交易所账户？')) return;
+    const res = await fetch(`/api/exchange-accounts/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+    });
+    if (res.ok) {
+        CacheManager.clear('exchangeAccounts');
+        await loadExchangeAccounts();
+        CacheManager.clear('portfolioData');
+        await loadAllData();
+    }
+};
+
+window.toggleExchangeAccount = async (id, enabled) => {
+    const res = await fetch(`/api/exchange-accounts/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
+        body: JSON.stringify({ enabled })
+    });
+
+    if (res.ok) {
+        CacheManager.clear('exchangeAccounts');
+        await loadExchangeAccounts();
+    }
+};
+
+window.triggerCexSync = async (exchange = '') => {
+    const res = await fetch('/api/cex/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
+        body: JSON.stringify(exchange ? { exchange } : {})
+    });
+
+    if (res.ok) {
+        CacheManager.clear('exchangeAccounts');
+        await loadExchangeAccounts();
+        CacheManager.clear('portfolioData');
+        await loadAllData();
+        alert('交易所资产同步已触发');
+    } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '同步触发失败');
+    }
+};
+
+window.triggerManualSync = async () => {
+    const btn = document.getElementById('manual-sync-btn');
+    const text = document.getElementById('sync-text');
+    if (btn) btn.disabled = true;
+    if (text) text.innerText = '同步中...';
+
+    try {
+        const res = await fetch('/api/assets/sync', {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+        });
+        if (!res.ok) throw new Error('sync_failed');
+
+        CacheManager.clear('portfolioData');
+        CacheManager.clearAllSnapshotCache();
+        CacheManager.clear('statsData');
+        CacheManager.clear('exchangeAccounts');
+        await loadAllData();
+        await loadExchangeAccounts();
+    } catch (e) {
+        alert('同步失败，请稍后重试');
+    } finally {
+        if (btn) btn.disabled = false;
+        if (text) text.innerText = '立即同步价格';
+    }
 };
 
 window.dangerAction = async (type) => {
@@ -1013,7 +1211,10 @@ function renderPortfolio(data) {
 
         let html = `
             <div class="flex justify-between items-start">
-                <h3 class="text-slate-300 font-semibold text-lg">${source.name}</h3>
+                <div class="flex items-center gap-2">
+                    <h3 class="text-slate-300 font-semibold text-lg">${source.name}</h3>
+                    <span class="text-[9px] px-1.5 py-0.5 rounded border ${(source.source_type || 'manual') === 'manual' ? 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' : 'text-amber-300 border-amber-400/40 bg-amber-500/10'}">${(source.source_type || 'manual').toUpperCase()}</span>
+                </div>
                 <span class="text-[10px] text-sky-400 font-bold uppercase">${source.children.length} Nets</span>
             </div>
             <div class="mt-2">
@@ -1030,24 +1231,37 @@ function renderPortfolio(data) {
                     <div class="flex items-center gap-2">
                         <span class="text-slate-50 text-sm font-bold">${token.amount}</span>
                         <span class="text-sky-400 text-[11px] font-mono font-black">${token.symbol || 'TOKEN'}</span>
+                        <span class="text-[9px] px-1.5 py-0.5 rounded border ${token.is_auto_synced ? 'text-amber-300 border-amber-400/40 bg-amber-500/10' : 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10'}">
+                            ${token.is_auto_synced ? 'API' : 'MANUAL'}
+                        </span>
                     </div>
                     ${token.label ? `
                         <span class="text-[9px] text-slate-500 font-medium uppercase tracking-wider mt-0.5 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50">
                             #${token.label}
+                        </span>` : ''}
+                    ${token.label_id ? `
+                        <span class="text-[9px] text-slate-400 font-medium uppercase tracking-wider mt-0.5 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50">
+                            ID:${token.label_id}
                         </span>` : ''}
                 </div>
             </div>
             
             <div class="flex items-center gap-3">
                 <span class="text-white text-sm font-mono">${formatMoney(token.value)}</span>
+                ${token.is_auto_synced ? `
+                    <span class="text-[10px] text-slate-500">自动同步</span>
+                    <button onclick="window.deleteCexAsset('${token.id}')" class="p-1 text-slate-700 hover:text-red-500" title="移除自动同步记录">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                ` : `
                 <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                    <button onclick="window.openEditModal('${token.id}', '${token.amount}', '${token.symbol}', '${net.name}', '${source.name}', '${(token.label || '').replace(/'/g, "\\'")}')" class="p-1 text-slate-500 hover:text-sky-400">
+                    <button onclick="window.openEditModal('${token.id}', '${token.amount}', '${token.symbol}', '${net.name}', '${source.name}', '${(token.label || '').replace(/'/g, "\\'")}', '${(token.label_id || '').replace(/'/g, "\\'")}', ${token.is_auto_synced ? 'true' : 'false'})" class="p-1 text-slate-500 hover:text-sky-400">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </button>
                     <button onclick="window.deleteAsset('${token.id}')" class="p-1 text-slate-700 hover:text-red-500">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </button>
-                </div>
+                </div>`}
             </div>
         </div>`;
             });

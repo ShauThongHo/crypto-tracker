@@ -36,6 +36,14 @@ return [
         'proxy_key' => env('CG_PROXY_KEY'),
     ],
 
+    'okx' => [
+        'base_url' => env('OKX_BASE_URL', 'https://www.okx.com'),
+    ],
+
+    'bitget' => [
+        'base_url' => env('BITGET_BASE_URL', 'https://api.bitget.com'),
+    ],
+
     'balance_alert' => [
         'auto_notify_enabled' => env('BALANCE_ALERT_AUTO_NOTIFY_ENABLED', false),
         'auto_notify_webhook_url' => env('BALANCE_ALERT_AUTO_NOTIFY_WEBHOOK_URL'),

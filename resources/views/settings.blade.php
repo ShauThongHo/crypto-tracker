@@ -7,7 +7,7 @@
             <div class="text-3xl font-light text-white">系统设置</div>
         </header>
 
-        <div class="max-w-4xl space-y-12">
+        <div class="w-full space-y-12">
             <div class="bg-[#0f172a] border border-slate-800 p-6 rounded-2xl flex justify-between items-center">
                 <div>
                     <h4 class="text-white font-medium">USD / MYR 切换</h4>
@@ -97,7 +97,55 @@
 
             <div>
                 <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-xl font-bold text-white">🏷️ 类别管理</h3>
+                    <h3 class="text-xl font-bold text-white">🏦 交易所 API 账户</h3>
+                    <div class="flex gap-3">
+                        <button onclick="triggerCexSync()"
+                            class="text-xs bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-white border border-emerald-500/20 px-4 py-2 rounded-lg transition-all">立即同步交易所资产</button>
+                        <button onclick="document.getElementById('addExchangeRow').classList.toggle('hidden')"
+                            class="text-xs bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 px-4 py-2 rounded-lg">+
+                            新增 API 账户</button>
+                    </div>
+                </div>
+                <div class="bg-[#0f172a] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-800/50 text-slate-500 text-[10px] uppercase font-bold tracking-wider">
+                            <tr>
+                                <th class="px-6 py-4">交易所</th>
+                                <th class="px-6 py-4">账户标签</th>
+                                <th class="px-6 py-4">API Key</th>
+                                <th class="px-6 py-4">状态</th>
+                                <th class="px-6 py-4">上次同步</th>
+                                <th class="px-6 py-4">最近错误</th>
+                                <th class="px-6 py-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="exchange-accounts-list" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                    <div id="addExchangeRow" class="hidden p-6 bg-slate-800/30 border-t border-slate-700">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <select id="newExchangeName" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                                <option value="okx">OKX</option>
+                                <option value="bitget">Bitget</option>
+                            </select>
+                            <input type="text" id="newExchangeLabel" placeholder="账户标签（如: 主账户）" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <input type="text" id="newExchangeApiKey" placeholder="API Key" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <input type="password" id="newExchangeApiSecret" placeholder="API Secret" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <input type="password" id="newExchangePassphrase" placeholder="Passphrase（OKX 必填）" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                            <div class="flex items-center gap-2">
+                                <input type="checkbox" id="newExchangeEnabled" checked class="accent-sky-500">
+                                <label for="newExchangeEnabled" class="text-slate-300 text-sm">启用此账户</label>
+                            </div>
+                        </div>
+                        <div class="mt-4 flex justify-end">
+                            <button onclick="submitExchangeAccount()" class="bg-sky-500 text-white px-6 py-2 rounded-xl">保存账户</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-bold text-white">️ 类别管理</h3>
                     <button type="button" onclick="document.getElementById('addCategoryRow').classList.toggle('hidden')"
                         class="text-xs bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 px-4 py-2 rounded-lg">+
                         新增类别</button>

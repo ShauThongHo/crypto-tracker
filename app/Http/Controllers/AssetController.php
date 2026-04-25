@@ -4,10 +4,11 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\{DB, Artisan, Http, Cache};
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
-use App\Models\{CapitalFlow, Asset};
-use App\Services\RebalanceService;
+use App\Models\{CapitalFlow, Asset, CexSyncedAsset, ExchangeAccount};
+use App\Services\{RebalanceService, CexSyncService};
 
 class AssetController extends Controller
 {
@@ -20,7 +21,12 @@ class AssetController extends Controller
      */
     public function getAssetThinkingMap()
     {
-        $assets = Asset::all(); // 统一使用 Model
+        $manualAssets = Asset::all();
+        $autoAssets = CexSyncedAsset::query()
+            ->where('is_active', true)
+            ->get();
+
+        $assets = $manualAssets->concat($autoAssets);
         $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
 
         $totalValue = $assets->sum(function ($item) {
@@ -33,7 +39,13 @@ class AssetController extends Controller
             'children' => []
         ];
 
-        $formatted = $assets->groupBy('source_name')->map(function ($sourceAssets, $sourceName) use ($trackedTokens) {
+        $formatted = $assets->groupBy(function ($asset) {
+            $sourceType = (string) ($asset->source_type ?? 'manual');
+            $sourceName = trim((string) ($asset->source_name ?? 'Unknown'));
+
+            return $sourceType . '||' . $sourceName;
+        })->map(function ($sourceAssets, $groupKey) use ($trackedTokens) {
+            [$sourceType, $sourceName] = array_pad(explode('||', (string) $groupKey, 2), 2, '');
             $sourceVal = $sourceAssets->sum(fn($a) => (float) $a->value_usd);
 
             $networks = $sourceAssets->groupBy('network')->map(function ($networkAssets, $networkName) use ($trackedTokens) {
@@ -48,13 +60,21 @@ class AssetController extends Controller
                             'symbol' => strtoupper($officialSymbol),
                             'amount' => (float) $asset->token_amount,
                             'value' => round((float) $asset->value_usd, 2),
-                            'label' => $asset->label ?? ''
+                            'label' => $asset->label ?? '',
+                            'label_id' => $asset->label_id ?? '',
+                            'source_type' => (string) ($asset->source_type ?? 'manual'),
+                            'is_auto_synced' => (string) ($asset->source_type ?? 'manual') !== 'manual',
                         ];
                     })->values()
                 ];
             })->values();
 
-            return ['name' => $sourceName, 'value' => round($sourceVal, 2), 'children' => $networks];
+            return [
+                'name' => $sourceName,
+                'source_type' => $sourceType !== '' ? $sourceType : 'manual',
+                'value' => round($sourceVal, 2),
+                'children' => $networks,
+            ];
         })->values();
 
         $tree['children'] = $formatted;
@@ -264,6 +284,7 @@ class AssetController extends Controller
     public function healthCheck()
     {
         try {
+            $cexSync = app(CexSyncService::class)->syncEnabledAccounts('health-check');
             Artisan::call('app:sync-crypto-data');
             $output = Artisan::output();
             $autoNotify = $this->attemptHealthCheckAutoNotify();
@@ -271,6 +292,7 @@ class AssetController extends Controller
             Log::info('Health check completed', [
                 'output' => $output,
                 'auto_notify' => $autoNotify,
+                'cex_sync' => $cexSync,
             ]);
 
             return response()->json([
@@ -278,6 +300,7 @@ class AssetController extends Controller
                 'time' => now()->toDateTimeString(),
                 'command_output' => $output,
                 'auto_notify' => $autoNotify,
+                'cex_sync' => $cexSync,
             ]);
         } catch (\Throwable $e) {
             Log::error('Health check failed', [
@@ -889,8 +912,14 @@ class AssetController extends Controller
     public function manualSync()
     {
         try {
+            $cexSync = app(CexSyncService::class)->syncEnabledAccounts('manual-sync');
             Artisan::call('app:sync-crypto-data');
-            return response()->json(['status' => 'success', 'last_sync' => Cache::get('last_sync_at')]);
+
+            return response()->json([
+                'status' => 'success',
+                'last_sync' => Cache::get('last_sync_at'),
+                'cex_sync' => $cexSync,
+            ]);
         } catch (\Exception $e) {
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
@@ -913,6 +942,311 @@ class AssetController extends Controller
         return response()->json(['rate' => $rate]);
     }
 
+    public function getExchangeAccounts()
+    {
+        $accounts = ExchangeAccount::query()
+            ->get()
+            ->sortByDesc(function ($account) {
+                $createdAt = $account->created_at ?? null;
+                if (!$createdAt) {
+                    return 0;
+                }
+
+                try {
+                    return Carbon::parse($createdAt)->timestamp;
+                } catch (\Throwable $e) {
+                    return 0;
+                }
+            })
+            ->values()
+            ->map(function ($account) {
+                return [
+                    'id' => (string) $account->id,
+                    'exchange' => strtolower((string) ($account->exchange ?? '')),
+                    'label' => (string) ($account->label ?? ''),
+                    'enabled' => (bool) ($account->enabled ?? false),
+                    'has_passphrase' => trim((string) ($account->api_passphrase_enc ?? '')) !== '',
+                    'last_sync_status' => (string) ($account->last_sync_status ?? ''),
+                    'last_sync_at' => $account->last_sync_at ? Carbon::parse($account->last_sync_at)->toDateTimeString() : null,
+                    'last_error' => (string) ($account->last_error ?? ''),
+                    'api_key_masked' => $this->maskApiKey((string) ($account->api_key_enc ?? ''), true),
+                ];
+            })
+            ->values();
+
+        return response()->json($accounts);
+    }
+
+    public function storeExchangeAccount(Request $request)
+    {
+        $v = $request->validate([
+            'exchange' => 'required|in:okx,bitget',
+            'label' => 'required|string|max:80',
+            'api_key' => 'required|string|max:255',
+            'api_secret' => 'required|string|max:255',
+            'passphrase' => 'nullable|string|max:255',
+            'api_passphrase' => 'nullable|string|max:255',
+            'enabled' => 'nullable|boolean',
+        ]);
+
+        $passphrase = trim((string) ($v['api_passphrase'] ?? $v['passphrase'] ?? ''));
+
+        $account = ExchangeAccount::create([
+            'exchange' => strtolower(trim((string) $v['exchange'])),
+            'label' => trim((string) $v['label']),
+            'api_key_enc' => Crypt::encryptString(trim((string) $v['api_key'])),
+            'api_secret_enc' => Crypt::encryptString(trim((string) $v['api_secret'])),
+            'api_passphrase_enc' => $passphrase !== ''
+                ? Crypt::encryptString($passphrase)
+                : '',
+            'enabled' => (bool) ($v['enabled'] ?? true),
+            'last_sync_status' => 'idle',
+            'last_error' => null,
+            'last_sync_at' => null,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'id' => (string) $account->id,
+        ]);
+    }
+
+    public function updateExchangeAccount(Request $request, $id)
+    {
+        $v = $request->validate([
+            'label' => 'nullable|string|max:80',
+            'api_key' => 'nullable|string|max:255',
+            'api_secret' => 'nullable|string|max:255',
+            'passphrase' => 'nullable|string|max:255',
+            'api_passphrase' => 'nullable|string|max:255',
+            'enabled' => 'nullable|boolean',
+        ]);
+
+        $account = ExchangeAccount::find($id);
+        if (!$account) {
+            return response()->json(['status' => 'error', 'message' => '账号不存在'], 404);
+        }
+
+        if ($request->has('label')) {
+            $account->label = trim((string) ($v['label'] ?? ''));
+        }
+        if ($request->has('enabled')) {
+            $account->enabled = (bool) ($v['enabled'] ?? false);
+        }
+        if ($request->has('api_key') && trim((string) ($v['api_key'] ?? '')) !== '') {
+            $account->api_key_enc = Crypt::encryptString(trim((string) $v['api_key']));
+        }
+        if ($request->has('api_secret') && trim((string) ($v['api_secret'] ?? '')) !== '') {
+            $account->api_secret_enc = Crypt::encryptString(trim((string) $v['api_secret']));
+        }
+        if ($request->has('passphrase') || $request->has('api_passphrase')) {
+            $passphrase = trim((string) ($v['api_passphrase'] ?? $v['passphrase'] ?? ''));
+            $account->api_passphrase_enc = $passphrase !== '' ? Crypt::encryptString($passphrase) : '';
+        }
+
+        $account->save();
+
+        return response()->json(['status' => 'success']);
+    }
+
+    public function deleteExchangeAccount($id)
+    {
+        $account = ExchangeAccount::find($id);
+        if (!$account) {
+            return response()->json(['status' => 'error', 'message' => '账号不存在'], 404);
+        }
+
+        $accountId = (string) $account->id;
+        $exchange = strtolower((string) ($account->exchange ?? ''));
+        $label = trim((string) ($account->label ?? ''));
+
+        // Historical data may store account_id in different BSON/string shapes.
+        // We perform a tolerant in-memory match so deletion is reliable.
+        $matchedIds = CexSyncedAsset::query()
+            ->where('exchange', $exchange)
+            ->get()
+            ->filter(function ($asset) use ($accountId, $exchange, $label) {
+                $assetAccountId = $this->normalizeComparableId($asset->account_id ?? null);
+                $assetExchange = strtolower(trim((string) ($asset->exchange ?? $asset->source_type ?? '')));
+                $assetLabel = trim((string) ($asset->account_label ?? ''));
+
+                if ($assetAccountId !== '' && $assetAccountId === $accountId) {
+                    return true;
+                }
+
+                if ($assetExchange !== '' && $assetExchange === $exchange && $label !== '' && $assetLabel === $label) {
+                    return true;
+                }
+
+                return false;
+            })
+            ->map(function ($asset) {
+                return (string) $asset->id;
+            })
+            ->filter()
+            ->values();
+
+        if ($matchedIds->isNotEmpty()) {
+            CexSyncedAsset::query()->whereIn('_id', $matchedIds->all())->delete();
+        }
+
+        $account->delete();
+
+        return response()->json(['status' => 'success']);
+    }
+
+    public function deleteCexAsset($id)
+    {
+        $asset = CexSyncedAsset::find($id);
+        if (!$asset) {
+            return response()->json(['status' => 'error', 'message' => '资产不存在'], 404);
+        }
+
+        $asset->delete();
+
+        return response()->json(['status' => 'success']);
+    }
+
+    public function syncCexAssets(Request $request)
+    {
+        $v = $request->validate([
+            'account_id' => 'nullable|string',
+            'exchange' => 'nullable|in:okx,bitget',
+        ]);
+
+        $exchange = trim((string) ($v['exchange'] ?? ''));
+        $accountId = trim((string) ($v['account_id'] ?? ''));
+        $service = app(CexSyncService::class);
+
+        if ($accountId !== '') {
+            $account = ExchangeAccount::find($accountId);
+            if (!$account) {
+                return response()->json(['status' => 'error', 'message' => '账号不存在'], 404);
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $service->syncSingleAccount($account, 'manual-api'),
+            ]);
+        }
+
+        if ($exchange !== '') {
+            $accounts = ExchangeAccount::query()
+                ->where('enabled', true)
+                ->where('exchange', $exchange)
+                ->get();
+
+            $summary = [
+                'trigger' => 'manual-api',
+                'accounts_total' => $accounts->count(),
+                'accounts_success' => 0,
+                'accounts_failed' => 0,
+                'assets_upserted' => 0,
+                'errors' => [],
+            ];
+
+            foreach ($accounts as $account) {
+                $result = $service->syncSingleAccount($account, 'manual-api');
+                if (($result['status'] ?? '') === 'success') {
+                    $summary['accounts_success']++;
+                    $summary['assets_upserted'] += (int) ($result['assets_upserted'] ?? 0);
+                } else {
+                    $summary['accounts_failed']++;
+                    $summary['errors'][] = [
+                        'account_id' => (string) $account->id,
+                        'message' => (string) ($result['message'] ?? 'sync_failed'),
+                    ];
+                }
+            }
+
+            return response()->json(['status' => 'success', 'data' => $summary]);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $service->syncEnabledAccounts('manual-api'),
+        ]);
+    }
+
+    public function getCexAssets()
+    {
+        $assets = CexSyncedAsset::query()
+            ->get()
+            ->sortByDesc(function ($asset) {
+                return (float) ($asset->value_usd ?? 0);
+            })
+            ->values()
+            ->map(function ($asset) {
+                return [
+                    'id' => (string) $asset->id,
+                    'exchange' => (string) ($asset->exchange ?? ''),
+                    'account_id' => (string) ($asset->account_id ?? ''),
+                    'account_label' => (string) ($asset->account_label ?? ''),
+                    'source_name' => (string) ($asset->source_name ?? ''),
+                    'symbol' => strtoupper((string) ($asset->symbol ?? '')),
+                    'token_name' => (string) ($asset->token_name ?? ''),
+                    'coingecko_id' => (string) ($asset->coingecko_id ?? ''),
+                    'token_amount' => (float) ($asset->token_amount ?? 0),
+                    'value_usd' => (float) ($asset->value_usd ?? 0),
+                    'is_active' => (bool) ($asset->is_active ?? false),
+                    'last_synced_at' => $asset->last_synced_at ? Carbon::parse($asset->last_synced_at)->toDateTimeString() : null,
+                ];
+            })
+            ->values();
+
+        return response()->json($assets);
+    }
+
+    private function maskApiKey(string $apiKeyEncrypted, bool $isEncrypted = false): string
+    {
+        if (trim($apiKeyEncrypted) === '') {
+            return '';
+        }
+
+        $plain = $apiKeyEncrypted;
+        if ($isEncrypted) {
+            try {
+                $plain = Crypt::decryptString($apiKeyEncrypted);
+            } catch (\Throwable $e) {
+                $plain = '';
+            }
+        }
+
+        $plain = trim((string) $plain);
+        if ($plain === '') {
+            return '';
+        }
+
+        if (mb_strlen($plain) <= 8) {
+            return str_repeat('*', mb_strlen($plain));
+        }
+
+        return mb_substr($plain, 0, 4) . str_repeat('*', mb_strlen($plain) - 8) . mb_substr($plain, -4);
+    }
+
+    private function normalizeComparableId($value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_string($value) || is_numeric($value)) {
+            return trim((string) $value);
+        }
+
+        if (is_object($value)) {
+            if (isset($value->{'$oid'})) {
+                return trim((string) $value->{'$oid'});
+            }
+
+            if (method_exists($value, '__toString')) {
+                return trim((string) $value);
+            }
+        }
+
+        return trim((string) json_encode($value));
+    }
+
     // =========================================================================
     // 3. 资产管理 (Asset Management)
     // =========================================================================
@@ -928,17 +1262,30 @@ class AssetController extends Controller
             'label' => 'nullable|string',
         ]);
 
-        Asset::create(array_merge($v, ['value_usd' => 0]));
+        Asset::create(array_merge($v, [
+            'source_type' => 'manual',
+            'value_usd' => 0,
+        ]));
         Artisan::call('app:sync-crypto-data');
         return response()->json(['status' => 'success']);
     }
 
     public function updateAsset(Request $request, $id)
     {
-        $v = $request->validate(['token_amount' => 'required|numeric', 'network' => 'required', 'source_name' => 'required', 'label' => 'nullable|string']);
+        $v = $request->validate([
+            'token_amount' => 'required|numeric',
+            'network' => 'required',
+            'source_name' => 'required',
+            'label' => 'nullable|string',
+        ]);
+
         $asset = Asset::find($id);
-        if ($asset)
+        if ($asset) {
+            if (strtolower((string) ($asset->source_type ?? 'manual')) !== 'manual') {
+                return response()->json(['status' => 'error', 'message' => '自动同步资产不可手动编辑'], 422);
+            }
             $asset->update($v);
+        }
         return response()->json(['status' => 'success']);
     }
 
@@ -1419,10 +1766,25 @@ class AssetController extends Controller
         return response()->json(['status' => 'success']);
     }
 
+    public function clearSnapshots()
+    {
+        DB::table('asset_snapshots')->delete();
+        return response()->json(['status' => 'success']);
+    }
+
+    public function clearAssets()
+    {
+        Asset::truncate();
+        CexSyncedAsset::truncate();
+        return response()->json(['status' => 'success']);
+    }
+
     public function wipeEverything()
     {
         DB::table('asset_snapshots')->delete();
         Asset::truncate();
+        CexSyncedAsset::truncate();
+        ExchangeAccount::truncate();
         DB::table('wallets')->delete();
         DB::table('tracked_tokens')->delete();
         CapitalFlow::truncate();
