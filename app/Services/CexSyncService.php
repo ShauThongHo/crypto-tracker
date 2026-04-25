@@ -441,7 +441,7 @@ class CexSyncService
         $tracked = collect();
         if ($symbols->isNotEmpty()) {
             $tracked = collect(\DB::table('tracked_tokens')->get())->keyBy(function ($row) {
-                return strtoupper((string) ($row->symbol ?? ''));
+                return strtoupper((string) data_get($row, 'symbol', ''));
             });
         }
 
@@ -471,8 +471,8 @@ class CexSyncService
             }
 
             $trackedRow = $tracked->get($symbol);
-            $coingeckoId = (string) ($trackedRow->coingecko_id ?? '');
-            $tokenName = (string) ($trackedRow->name ?? $symbol);
+            $coingeckoId = (string) data_get($trackedRow, 'coingecko_id', '');
+            $tokenName = (string) data_get($trackedRow, 'name', $symbol);
             $priceUsd = $coingeckoId !== '' ? (float) data_get($priceMap, $coingeckoId . '.usd', 0) : 0;
             $valueUsd = $amount * $priceUsd;
 

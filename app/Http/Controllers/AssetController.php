@@ -1626,7 +1626,9 @@ class AssetController extends Controller
         $prepareThreshold = (float) ($input['prepare_threshold'] ?? 3.0);
         $rebalanceThreshold = (float) ($input['rebalance_threshold'] ?? 5.0);
         $forceThreshold = (float) ($input['force_threshold'] ?? 7.5);
-        $assets = Asset::all();
+        $manualAssets = Asset::all();
+        $autoAssets = CexSyncedAsset::query()->where('is_active', true)->get();
+        $assets = $manualAssets->concat($autoAssets);
         $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
 
         $normalizedAssets = $assets->map(function ($asset) use ($trackedTokens) {
