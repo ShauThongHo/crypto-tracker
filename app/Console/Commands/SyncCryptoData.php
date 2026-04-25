@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
+use App\Models\CexSyncedAsset;
 
 class SyncCryptoData extends Command
 {
@@ -99,6 +100,15 @@ class SyncCryptoData extends Command
                 }
 
                 // C. 记录快照 (这是你图表不乱的关键)
+                $cexPortfolioValue = CexSyncedAsset::query()
+                    ->where('is_active', true)
+                    ->get()
+                    ->sum(function ($asset) {
+                        return (float) ($asset->value_usd ?? 0);
+                    });
+
+                $totalPortfolioValue += (float) $cexPortfolioValue;
+
                 DB::table('asset_snapshots')->insert([
                     'total_value_usd' => $totalPortfolioValue,
                     'snapshot_time' => $alignedTime, 
