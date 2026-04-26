@@ -6,8 +6,10 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use App\Models\CexSyncedAsset;
+use App\Services\CexSyncService;
 
 class SyncCryptoData extends Command
 {
@@ -35,6 +37,38 @@ class SyncCryptoData extends Command
         $this->info("📡 正在通过中转站对齐到 {$alignedTime->format('H:i:s')} 同步价格...");
 
         try {
+            // --- 3.1 先同步 CEX 资产，再计算整体价值与写入快照 ---
+            $cexValueBeforeSync = (float) CexSyncedAsset::query()
+                ->where('is_active', true)
+                ->get()
+                ->sum(function ($asset) {
+                    return (float) ($asset->value_usd ?? 0);
+                });
+
+            $cexSyncSummary = [
+                'trigger' => 'price-sync',
+                'accounts_total' => 0,
+                'accounts_success' => 0,
+                'accounts_failed' => 0,
+                'errors' => [],
+            ];
+
+            try {
+                $cexSyncSummary = app(CexSyncService::class)->syncEnabledAccounts('price-sync');
+            } catch (\Throwable $e) {
+                $cexSyncSummary = [
+                    'trigger' => 'price-sync',
+                    'accounts_total' => 1,
+                    'accounts_success' => 0,
+                    'accounts_failed' => 1,
+                    'errors' => [['message' => $e->getMessage()]],
+                ];
+            }
+
+            $cexSyncHardFailed = (int) ($cexSyncSummary['accounts_total'] ?? 0) > 0
+                && (int) ($cexSyncSummary['accounts_success'] ?? 0) === 0
+                && (int) ($cexSyncSummary['accounts_failed'] ?? 0) > 0;
+
             // 获取所有需要追踪的 ID
             $trackedTokens = DB::table('tracked_tokens')->get();
             $ids = $trackedTokens->pluck('coingecko_id')->toArray();
@@ -107,24 +141,50 @@ class SyncCryptoData extends Command
                         return (float) ($asset->value_usd ?? 0);
                     });
 
+                $skipSnapshot = false;
+                if ($cexSyncHardFailed) {
+                    if ($cexValueBeforeSync > 0) {
+                        $cexPortfolioValue = $cexValueBeforeSync;
+                        Log::warning('CEX sync failed; fallback to previous CEX value when writing snapshot', [
+                            'slot' => $alignedTime->toDateTimeString(),
+                            'cex_value_before_sync' => $cexValueBeforeSync,
+                            'cex_sync' => $cexSyncSummary,
+                        ]);
+                    } else {
+                        $skipSnapshot = true;
+                        Log::warning('CEX sync failed and no previous CEX value; skip snapshot write', [
+                            'slot' => $alignedTime->toDateTimeString(),
+                            'cex_sync' => $cexSyncSummary,
+                        ]);
+                    }
+                }
+
                 $totalPortfolioValue += (float) $cexPortfolioValue;
 
-                DB::table('asset_snapshots')->updateOrInsert(
-                    ['snapshot_time' => $alignedTime],
-                    [
-                        'total_value_usd' => $totalPortfolioValue,
-                        'snapshot_time' => $alignedTime,
-                        'updated_at' => now(),
-                        'created_at' => now(),
-                    ]
-                );
+                if (!$skipSnapshot) {
+                    DB::table('asset_snapshots')->updateOrInsert(
+                        ['snapshot_time' => $alignedTime],
+                        [
+                            'total_value_usd' => $totalPortfolioValue,
+                            'snapshot_time' => $alignedTime,
+                            'updated_at' => now(),
+                            'created_at' => now(),
+                        ]
+                    );
+                }
 
                 // --- 4. 锁定该槽位并更新成功状态 ---
-                Cache::put($slotKey, true, 600); 
-                Cache::put('sync_status', 'success', 3600);
-                Cache::put('last_sync_at', $alignedTime->toDateTimeString(), 3600);
+                if ($skipSnapshot) {
+                    Cache::forget($slotKey);
+                    Cache::put('sync_status', 'error', 3600);
+                    $this->warn("⚠️ 槽位 {$alignedTime->format('H:i:s')} CEX 同步失败且无历史值，已跳过 snapshot 写入。");
+                } else {
+                    Cache::put($slotKey, true, 600);
+                    Cache::put('sync_status', 'success', 3600);
+                    Cache::put('last_sync_at', $alignedTime->toDateTimeString(), 3600);
 
-                $this->info("✅ 槽位 {$alignedTime->format('H:i:s')} 通过中转同步成功！");
+                    $this->info("✅ 槽位 {$alignedTime->format('H:i:s')} 通过中转同步成功！");
+                }
 
             } else {
                 $status = $response->status();
