@@ -64,7 +64,7 @@
                                 <th id="detailsValueHeader" class="px-4 py-3 text-right">价值 (USD)</th>
                                 <th class="px-4 py-3 text-right">当前占比</th>
                                 <th class="px-4 py-3 text-right">目标占比</th>
-                                <th class="px-4 py-3 text-right">偏离</th>
+                                <th class="px-4 py-3 text-right">偏离修正比例</th>
                                 <th class="px-4 py-3 text-right">绝对偏离</th>
                                 <th class="px-4 py-3 text-right">调仓建议 (USD)</th>
                             </tr>
