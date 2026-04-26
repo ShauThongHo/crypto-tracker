@@ -867,7 +867,13 @@ class BalanceAlertPage {
             const weightPct = Number(item.weight_pct || 0).toFixed(2);
             const targetPctNum = Number(item.target_pct || 0);
             const targetPct = targetPctNum.toFixed(2);
-            const deviationPct = Number(item.deviation_pct || 0).toFixed(2);
+            const deviationNum = Number(item.deviation_pct || 0);
+            const deviationPct = `${deviationNum > 0 ? '+' : ''}${deviationNum.toFixed(2)}`;
+            const deviationClass = deviationNum > 0
+                ? 'text-emerald-300'
+                : deviationNum < 0
+                    ? 'text-red-300'
+                    : 'text-slate-300';
             const absDeviationPct = Number(item.abs_deviation_pct || 0).toFixed(2);
             const adviceUsd = Number(item.advice_usd ?? 0);
             const adviceAction = String(item.advice_action || (adviceUsd > 0 ? 'buy' : (adviceUsd < 0 ? 'sell' : 'hold')));
@@ -888,7 +894,7 @@ class BalanceAlertPage {
                     <td class="px-4 py-3 text-right text-slate-300">${valueDisplay}</td>
                     <td class="px-4 py-3 text-right text-slate-300">${weightPct}%</td>
                     <td class="px-4 py-3 text-right text-slate-300">${targetPct}%</td>
-                    <td class="px-4 py-3 text-right text-slate-300">${deviationPct}%</td>
+                    <td class="px-4 py-3 text-right ${deviationClass}">${deviationPct}%</td>
                     <td class="px-4 py-3 text-right text-slate-300">${absDeviationPct}%</td>
                     <td class="px-4 py-3 text-right ${rebalanceClass}">${adviceText}</td>
                 </tr>
