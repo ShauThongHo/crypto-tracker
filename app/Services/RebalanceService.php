@@ -46,8 +46,8 @@ class RebalanceService
             $currentValue = $this->normalizeNumber($asset['current_value'] ?? $asset['value'] ?? 0);
             $targetPct = $this->normalizeNumber($asset['target_pct'] ?? 0);
             $currentPct = $this->divide($this->multiply($currentValue, $hundred), $portfolio);
-            $deviationPct = $this->abs($this->subtract($currentPct, $targetPct));
-            $isInactive = $this->compare($deviationPct, $threshold) < 0;
+            $deviationPct = $this->subtract($targetPct, $currentPct);
+            $isInactive = $this->compare($this->abs($deviationPct), $threshold) < 0;
 
             $items[$index] = [
                 'id' => (string) ($asset['id'] ?? $index),
@@ -121,7 +121,8 @@ class RebalanceService
         $totalSell = '0';
         $maxDeviation = '0';
         foreach ($items as $item) {
-            $maxDeviation = $this->compare($item['deviation_pct'], $maxDeviation) > 0 ? $item['deviation_pct'] : $maxDeviation;
+            $absDeviation = $this->abs($item['deviation_pct']);
+            $maxDeviation = $this->compare($absDeviation, $maxDeviation) > 0 ? $absDeviation : $maxDeviation;
             if ($this->compare($item['advice_usd'], '0') > 0) {
                 $totalBuy = $this->add($totalBuy, $item['advice_usd']);
             } elseif ($this->compare($item['advice_usd'], '0') < 0) {
