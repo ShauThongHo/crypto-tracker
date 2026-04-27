@@ -1,6 +1,6 @@
 <div id="addAssetModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl">
-        <form id="addAssetForm" onsubmit="submitNewAsset(event)" class="p-6 space-y-4">
+        <form id="addAssetForm" onsubmit="event.preventDefault(); if (typeof window.submitNewAsset === 'function') { window.submitNewAsset(event); } return false;" class="p-6 space-y-4">
             <h3 class="text-xl font-bold text-white mb-4">录入新资产</h3>
             
             <div id="manual-source-row" class="relative">
@@ -46,7 +46,7 @@
 
 <div id="editAssetModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl">
-        <form id="editAssetForm" onsubmit="submitEditAsset(event)" class="p-6 space-y-4">
+        <form id="editAssetForm" onsubmit="event.preventDefault(); if (typeof window.submitEditAsset === 'function') { window.submitEditAsset(event); } return false;" class="p-6 space-y-4">
             <h3 class="text-xl font-bold text-white mb-4">编辑资产 <span id="edit-token-label" class="text-[10px] bg-sky-500/10 text-sky-400 px-2 py-1 rounded-md font-mono"></span></h3>
             
             <input type="hidden" id="edit_asset_id">

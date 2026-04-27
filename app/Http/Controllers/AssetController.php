@@ -1354,12 +1354,21 @@ class AssetController extends Controller
     {
         $v = $request->validate([
             'source_name' => 'required',
-            'network' => 'required',
+            'network' => 'nullable|required_without:chain|string',
+            'chain' => 'nullable|string',
             'token_name' => 'required',
             'coingecko_id' => 'required',
             'token_amount' => 'required|numeric',
             'label' => 'nullable|string',
         ]);
+
+        $network = trim((string) ($v['network'] ?? $v['chain'] ?? ''));
+        if ($network === '') {
+            return response()->json(['status' => 'error', 'message' => 'network/chain 不能为空'], 422);
+        }
+
+        $v['network'] = strtoupper($network);
+        unset($v['chain']);
 
         Asset::create(array_merge($v, [
             'source_type' => 'manual',
@@ -1373,10 +1382,19 @@ class AssetController extends Controller
     {
         $v = $request->validate([
             'token_amount' => 'required|numeric',
-            'network' => 'required',
+            'network' => 'nullable|required_without:chain|string',
+            'chain' => 'nullable|string',
             'source_name' => 'required',
             'label' => 'nullable|string',
         ]);
+
+        $network = trim((string) ($v['network'] ?? $v['chain'] ?? ''));
+        if ($network === '') {
+            return response()->json(['status' => 'error', 'message' => 'network/chain 不能为空'], 422);
+        }
+
+        $v['network'] = strtoupper($network);
+        unset($v['chain']);
 
         $asset = Asset::find($id);
         if ($asset) {

@@ -280,6 +280,8 @@ window.submitEditAsset = async (event) => {
         console.error("更新请求发生错误:", e);
         alert("网络请求失败，请检查 API 连通性");
     }
+
+    return false;
 };
 
 window.submitNewAsset = async (event) => {
@@ -293,7 +295,7 @@ window.submitNewAsset = async (event) => {
 
     if (!source_name || !token_name || !coingecko_id || !token_amount || !network) {
         alert('请填写所有必填字段');
-        return;
+        return false;
     }
 
     const res = await fetch('/api/assets', {
@@ -310,6 +312,8 @@ window.submitNewAsset = async (event) => {
         await loadAllData(); 
     }
     else { alert('添加失败'); }
+
+    return false;
 };
 
 window.deleteAsset = async (id) => {
