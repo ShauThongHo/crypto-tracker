@@ -18,6 +18,7 @@ class Asset extends Model
     protected $fillable = [
         'source_name',
         'source_type',
+        'network',
         'token_name',
         'symbol',       // 👈 加上这个
         'label',        // 👈 加上这个
