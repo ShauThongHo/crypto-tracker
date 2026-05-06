@@ -1,6 +1,7 @@
 @extends('layouts.app')
 
 @section('content')
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <section class="content-view p-4 md:p-8 lg:p-12">
         <header class="mb-10">
             <h2 class="text-slate-500 text-sm font-medium tracking-widest uppercase mb-2">Risk Control</h2>
@@ -141,6 +142,25 @@
                     </div>
 
                     <div id="statusBox" class="hidden rounded-xl border p-3 text-sm"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="symbolTargetsModal" class="fixed inset-0 z-[60] hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm px-4">
+            <div class="w-full max-w-lg rounded-3xl border border-slate-800 bg-[#0f172a] shadow-2xl shadow-black/40">
+                <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+                    <div>
+                        <div id="symbolTargetsTitle" class="text-lg font-bold text-white">细分设置</div>
+                        <div class="text-xs text-slate-500 mt-1">为组合内每个币种设置相对权重（只影响该格子内分配）</div>
+                    </div>
+                    <button id="closeSymbolTargetsBtn" class="text-slate-400 hover:text-white text-sm">关闭</button>
+                </div>
+                <div class="p-6 space-y-4">
+                    <div id="symbolTargetsList" class="grid gap-3"></div>
+                    <div class="flex gap-2 justify-end">
+                        <button id="saveSymbolTargetsBtn" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm">保存</button>
+                        <button id="cancelSymbolTargetsBtn" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm">取消</button>
+                    </div>
                 </div>
             </div>
         </div>

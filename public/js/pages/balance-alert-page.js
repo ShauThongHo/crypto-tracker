@@ -1,8 +1,11 @@
 class BalanceAlertPage {
     constructor() {
         this.storageKey = 'balance_alert_config_v4';
+        this.symbolTargetsStorageKey = 'balance_alert_symbol_targets_v1';
         this.snapshot = null;
         this.allocations = [];
+        this.symbolTargets = {};
+        this.expandedDetailGroups = new Set();
         this.draggingSymbol = null;
         this.autoRefreshTimer = null;
         this.preferredCurrency = 'USD';
@@ -19,6 +22,88 @@ class BalanceAlertPage {
         this.bindElements();
         this.restoreConfig();
         this.initialize();
+    }
+
+    closeSymbolTargets() {
+        if (!this.symbolTargetsModal) return;
+        this.symbolTargetsModal.classList.add('hidden');
+        this.symbolTargetsModal.classList.remove('flex');
+        this.symbolTargetsModal.style.zIndex = '';
+        this.currentEditingAllocationId = null;
+    }
+
+    toggleDetailGroup(groupId) {
+        const id = String(groupId || '').trim();
+        if (!id) return;
+
+        if (this.expandedDetailGroups.has(id)) {
+            this.expandedDetailGroups.delete(id);
+        } else {
+            this.expandedDetailGroups.add(id);
+        }
+
+        this.syncDetailGroupVisibility();
+    }
+
+    syncDetailGroupVisibility() {
+        if (!this.tokensBody) return;
+
+        const expanded = this.expandedDetailGroups;
+        this.tokensBody.querySelectorAll('[data-detail-group-id]').forEach((groupRow) => {
+            const groupId = groupRow.dataset.detailGroupId;
+            const isExpanded = expanded.has(groupId);
+            groupRow.classList.toggle('bg-slate-900/60', isExpanded);
+            const toggleBtn = groupRow.querySelector('[data-detail-toggle]');
+            if (toggleBtn) {
+                toggleBtn.textContent = isExpanded ? '⌄' : '>';
+                toggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            }
+
+            groupRow.querySelectorAll('[data-summary-cell]').forEach((cell) => {
+                cell.classList.toggle('hidden', isExpanded);
+            });
+        });
+
+        this.tokensBody.querySelectorAll('[data-detail-parent]').forEach((detailRow) => {
+            const groupId = detailRow.dataset.detailParent;
+            detailRow.classList.toggle('hidden', !expanded.has(groupId));
+        });
+    }
+
+    saveSymbolTargets() {
+        if (!this.symbolTargetsList || !this.currentEditingAllocationId) return;
+        const inputs = Array.from(this.symbolTargetsList.querySelectorAll('input[data-symbol]'));
+        let changed = false;
+        inputs.forEach((inp) => {
+            const sym = String(inp.dataset.symbol || '').toUpperCase();
+            const val = inp.value === '' ? 0 : this.parseNumber(inp.value, 0);
+            if (val > 0) {
+                if (Number(this.symbolTargets?.[sym] || 0) !== val) {
+                    changed = true;
+                }
+                this.symbolTargets[sym] = val;
+            } else {
+                if (Object.prototype.hasOwnProperty.call(this.symbolTargets || {}, sym)) {
+                    changed = true;
+                }
+                delete this.symbolTargets[sym];
+            }
+        });
+
+        if (this.currentEditingAllocationId) {
+            this.markAllocationDirty(this.currentEditingAllocationId);
+        }
+
+        // Keep DB in sync even when the user resets all symbol targets to 0.
+        if (changed) {
+            this.schedulePersistAllocations();
+        }
+
+        this.persistSymbolTargets();
+        this.setStatus('success', '已保存币种细分设置（本地）。');
+        this.renderAllocationList();
+        this.scheduleSnapshotRefresh();
+        this.closeSymbolTargets();
     }
 
     async initialize() {
@@ -83,6 +168,12 @@ class BalanceAlertPage {
         this.tokenPool = document.getElementById('tokenPool');
         this.allocationList = document.getElementById('allocationList');
         this.helperText = document.getElementById('helperText');
+        this.symbolTargetsModal = document.getElementById('symbolTargetsModal');
+        this.symbolTargetsList = document.getElementById('symbolTargetsList');
+        this.symbolTargetsTitle = document.getElementById('symbolTargetsTitle');
+        this.closeSymbolTargetsBtn = document.getElementById('closeSymbolTargetsBtn');
+        this.saveSymbolTargetsBtn = document.getElementById('saveSymbolTargetsBtn');
+        this.cancelSymbolTargetsBtn = document.getElementById('cancelSymbolTargetsBtn');
     }
 
     bindEvents() {
@@ -95,6 +186,9 @@ class BalanceAlertPage {
         });
         this.openAllocationSettingsBtn.addEventListener('click', () => this.openAllocationSettings());
         this.closeAllocationSettingsBtn.addEventListener('click', () => this.closeAllocationSettings());
+        if (this.closeSymbolTargetsBtn) this.closeSymbolTargetsBtn.addEventListener('click', () => this.closeSymbolTargets());
+        if (this.cancelSymbolTargetsBtn) this.cancelSymbolTargetsBtn.addEventListener('click', () => this.closeSymbolTargets());
+        if (this.saveSymbolTargetsBtn) this.saveSymbolTargetsBtn.addEventListener('click', () => this.saveSymbolTargets());
         this.allocationSettingsModal.addEventListener('click', (event) => {
             if (event.target === this.allocationSettingsModal) {
                 this.closeAllocationSettings();
@@ -104,6 +198,7 @@ class BalanceAlertPage {
             if (event.key === 'Escape') {
                 this.closeReminderSettings();
                 this.closeAllocationSettings();
+                this.closeSymbolTargets();
             }
         });
 
@@ -151,6 +246,14 @@ class BalanceAlertPage {
             }
         });
 
+        // 编辑组合内币种细分（本地保存）
+        this.allocationList.addEventListener('click', (event) => {
+            const editBtn = event.target.closest('.edit-symbol-targets-btn');
+            if (!editBtn) return;
+            const allocationId = editBtn.dataset.allocationId;
+            this.editSymbolTargets(allocationId);
+        });
+
         this.allocationList.addEventListener('dragover', (event) => {
             event.preventDefault();
         });
@@ -168,6 +271,14 @@ class BalanceAlertPage {
             if (!symbol) return;
             await this.createSingleCoinAllocation(symbol);
         });
+
+        if (this.tokensBody) {
+            this.tokensBody.addEventListener('click', (event) => {
+                const toggleBtn = event.target.closest('[data-detail-toggle]');
+                if (!toggleBtn) return;
+                this.toggleDetailGroup(toggleBtn.dataset.detailToggle);
+            });
+        }
 
         this.tokenPool.addEventListener('dragover', (event) => {
             event.preventDefault();
@@ -280,8 +391,23 @@ class BalanceAlertPage {
             this.prepareThreshold.value = data.prepareThreshold ?? 3;
             this.rebalanceThreshold.value = data.rebalanceThreshold ?? 5;
             this.forceThreshold.value = data.forceThreshold ?? 7.5;
+            // restore symbol-level targets
+            try {
+                const rawTargets = localStorage.getItem(this.symbolTargetsStorageKey);
+                if (rawTargets) this.symbolTargets = JSON.parse(rawTargets) || {};
+            } catch (e) {
+                this.symbolTargets = {};
+            }
         } catch (error) {
             console.warn('读取平衡提醒配置失败', error);
+        }
+    }
+
+    persistSymbolTargets() {
+        try {
+            localStorage.setItem(this.symbolTargetsStorageKey, JSON.stringify(this.symbolTargets || {}));
+        } catch (e) {
+            console.warn('保存币种细分配置失败', e);
         }
     }
 
@@ -295,6 +421,22 @@ class BalanceAlertPage {
 
             const categories = await res.json();
             if (!res.ok || !Array.isArray(categories)) return;
+
+            // Merge persisted symbol_targets into local store
+            try {
+                (categories || []).forEach((category) => {
+                    if (category && category.symbol_targets && typeof category.symbol_targets === 'object') {
+                        Object.entries(category.symbol_targets).forEach(([sym, v]) => {
+                            if (!sym) return;
+                            const key = String(sym || '').toUpperCase();
+                            const num = Number(v || 0);
+                            if (Number.isFinite(num) && num > 0) this.symbolTargets[key] = num;
+                        });
+                    }
+                });
+            } catch (e) {
+                console.warn('合并已存币种细分失败', e);
+            }
 
             this.allocations = categories.map((category, index) => this.normalizeAllocation(category, index));
         } catch (error) {
@@ -399,6 +541,35 @@ class BalanceAlertPage {
         };
     }
 
+    editSymbolTargets(allocationId) {
+        const allocation = this.findAllocation(String(allocationId));
+        if (!allocation) return;
+        const symbols = allocation.symbols || [];
+        if (!Array.isArray(symbols) || symbols.length <= 1) {
+            alert('仅包含多个币种的组合支持细分设置。');
+            return;
+        }
+
+        // populate modal
+        this.currentEditingAllocationId = allocationId;
+        this.symbolTargetsTitle.textContent = `细分设置 · ${allocation.name || allocation.id}`;
+        this.symbolTargetsList.innerHTML = '';
+        symbols.forEach((sym) => {
+            const val = Number(this.symbolTargets?.[sym] || 0);
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3';
+            row.innerHTML = `
+                <div class="w-1/3 text-slate-300">${sym}</div>
+                <input data-symbol="${sym}" type="number" step="0.01" min="0" value="${val > 0 ? val.toFixed(2) : ''}" class="w-2/3 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm" />
+            `;
+            this.symbolTargetsList.appendChild(row);
+        });
+
+        this.symbolTargetsModal.classList.remove('hidden');
+        this.symbolTargetsModal.classList.add('flex');
+        this.symbolTargetsModal.style.zIndex = '60';
+    }
+
     markAllocationDirty(id) {
         if (!id) return;
         this.dirtyAllocationIds.add(String(id));
@@ -448,6 +619,13 @@ class BalanceAlertPage {
                 const allocation = this.findAllocation(id);
                 if (!allocation) continue;
 
+                // build symbol_targets payload for this allocation from local symbolTargets store
+                const symbolTargetsForAllocation = {};
+                (allocation.symbols || []).forEach((s) => {
+                    const v = Number(this.symbolTargets?.[s] || 0);
+                    if (Number.isFinite(v) && v > 0) symbolTargetsForAllocation[s] = v;
+                });
+
                 const res = await fetch(`${this.categoryApiBase}/${encodeURIComponent(id)}`, {
                     method: 'PUT',
                     headers: {
@@ -459,6 +637,7 @@ class BalanceAlertPage {
                         name: (allocation.name || '').trim() || id,
                         target_pct: this.parseNumber(allocation.target_pct, 0),
                         symbols: this.normalizeSymbols(allocation.symbols || []),
+                        symbol_targets: symbolTargetsForAllocation,
                     }),
                 });
 
@@ -705,6 +884,7 @@ class BalanceAlertPage {
                         </div>
                     </div>
                     <div class="mt-2 text-[11px] text-slate-500">${(item.symbols || []).length <= 1 ? '单币' : '组合'} · ${(item.symbols || []).join(', ') || '空'}</div>
+                    ${ (item.symbols || []).length > 1 ? `<div class="mt-2"><button data-allocation-id="${item.id}" class="edit-symbol-targets-btn px-2 py-1 rounded-md bg-slate-800 text-xs text-slate-200">细分</button></div>` : '' }
                 </div>
             `;
         }).join('') : '<div class="px-4 py-6 text-slate-500 text-sm">暂无列表项。把未分配币种拖到这里，或点击“新增格子”创建单币/组合格子。</div>';
@@ -772,7 +952,20 @@ class BalanceAlertPage {
             prepare_threshold: this.parseNumber(this.prepareThreshold.value, 3),
             rebalance_threshold: this.parseNumber(this.rebalanceThreshold.value, 5),
             force_threshold: this.parseNumber(this.forceThreshold.value, 7.5),
+            allocations: this.getAllocationsPayload(),
+            target_allocations: this.getSymbolTargetsPayload(),
         };
+    }
+
+    getSymbolTargetsPayload() {
+        const rows = [];
+        for (const [symbol, pct] of Object.entries(this.symbolTargets || {})) {
+            const num = Number(pct || 0);
+            if (Number.isFinite(num) && num > 0) {
+                rows.push({ symbol: String(symbol).toUpperCase(), target_pct: Number(num) });
+            }
+        }
+        return rows;
     }
 
     setStatus(type, text) {
@@ -860,7 +1053,7 @@ class BalanceAlertPage {
             return;
         }
 
-        this.tokensBody.innerHTML = items.map((item) => {
+        const buildRow = (item, options = {}) => {
             const name = item.name || '-';
             const valueUsd = Number(item.value || 0);
             const valueDisplay = this.formatMoneyByPreference(valueUsd);
@@ -868,13 +1061,16 @@ class BalanceAlertPage {
             const targetPctNum = Number(item.target_pct || 0);
             const targetPct = targetPctNum.toFixed(2);
             const deviationNum = Number(item.deviation_pct || 0);
+            const absDeviationNum = Number(item.abs_deviation_pct || 0);
+            const children = Array.isArray(item.children) ? item.children : [];
+
             const deviationPct = `${deviationNum > 0 ? '+' : ''}${deviationNum.toFixed(2)}`;
             const deviationClass = deviationNum > 0
                 ? 'text-emerald-300'
                 : deviationNum < 0
                     ? 'text-red-300'
                     : 'text-slate-300';
-            const absDeviationPct = Number(item.abs_deviation_pct || 0).toFixed(2);
+            const absDeviationPct = absDeviationNum.toFixed(2);
             const adviceUsd = Number(item.advice_usd ?? 0);
             const adviceAction = String(item.advice_action || (adviceUsd > 0 ? 'buy' : (adviceUsd < 0 ? 'sell' : 'hold')));
             const adviceText = adviceAction === 'buy'
@@ -887,19 +1083,88 @@ class BalanceAlertPage {
                 : adviceAction === 'sell'
                     ? 'text-amber-300'
                     : 'text-slate-400';
+            const childTag = options.isChild ? '<span class="ml-2 text-[10px] rounded-full border border-slate-700 px-2 py-0.5 text-slate-500">明细</span>' : '';
+            // Use flex with fixed-width container for toggle button to ensure alignment
+            const toggleButton = options.hasChildren
+                ? `<button type="button" data-detail-toggle="${item.id}" class="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-[11px] text-slate-300 hover:border-slate-500 hover:text-white flex-shrink-0">${this.expandedDetailGroups.has(String(item.id)) ? '⌄' : '>'}</button>`
+                : '<span class="inline-block w-5 flex-shrink-0"></span>';
 
             return `
-                <tr class="hover:bg-slate-900/50">
-                    <td class="px-4 py-3 text-slate-200">${name}</td>
-                    <td class="px-4 py-3 text-right text-slate-300">${valueDisplay}</td>
-                    <td class="px-4 py-3 text-right text-slate-300">${weightPct}%</td>
-                    <td class="px-4 py-3 text-right text-slate-300">${targetPct}%</td>
-                    <td class="px-4 py-3 text-right ${deviationClass}">${deviationPct}%</td>
-                    <td class="px-4 py-3 text-right text-slate-300">${absDeviationPct}%</td>
-                    <td class="px-4 py-3 text-right ${rebalanceClass}">${adviceText}</td>
+                <tr data-detail-group-id="${item.id}" class="hover:bg-slate-900/50 ${this.expandedDetailGroups.has(String(item.id)) ? 'bg-slate-900/40' : ''}">
+                    <td class="px-4 py-3 text-slate-200">
+                        <div class="flex items-center gap-2">
+                            ${toggleButton}
+                            <span class="font-medium">${name}</span>
+                            ${childTag}
+                        </div>
+                    </td>
+                    <td data-summary-cell class="px-4 py-3 text-right text-slate-300">${valueDisplay}</td>
+                    <td data-summary-cell class="px-4 py-3 text-right text-slate-300">${weightPct}%</td>
+                    <td data-summary-cell class="px-4 py-3 text-right text-slate-300">${targetPct}%</td>
+                    <td data-summary-cell class="px-4 py-3 text-right ${deviationClass}">${deviationPct}%</td>
+                    <td data-summary-cell class="px-4 py-3 text-right text-slate-300">${absDeviationPct}%</td>
+                    <td data-summary-cell class="px-4 py-3 text-right ${rebalanceClass}">${adviceText}</td>
                 </tr>
             `;
-        }).join('');
+        };
+
+        const rows = [];
+        items.forEach((item) => {
+            const children = Array.isArray(item.children) ? item.children : [];
+            // hasChildren should be based on whether there are actually multiple children (breakdown), not just symbols count
+            const hasChildren = children.length > 1;
+            rows.push(buildRow(item, { hasChildren }));
+
+            if (hasChildren) {
+                children.forEach((child) => {
+                    const childName = child.name || '-';
+                    const childValueUsd = Number(child.value || 0);
+                    const childValueDisplay = this.formatMoneyByPreference(childValueUsd);
+                    const childWeightPct = Number(child.weight_pct || 0).toFixed(2);
+                    const childTargetPct = Number(child.target_pct || 0).toFixed(2);
+                    const childDeviationNum = Number(child.deviation_pct || 0);
+                    const childDeviationPct = `${childDeviationNum > 0 ? '+' : ''}${childDeviationNum.toFixed(2)}`;
+                    const childDeviationClass = childDeviationNum > 0
+                        ? 'text-emerald-300'
+                        : childDeviationNum < 0
+                            ? 'text-red-300'
+                            : 'text-slate-300';
+                    const childAbsDeviationPct = Number(child.abs_deviation_pct || 0).toFixed(2);
+                    const childAdviceUsd = Number(child.advice_usd ?? 0);
+                    const childAdviceAction = String(child.advice_action || (childAdviceUsd > 0 ? 'buy' : (childAdviceUsd < 0 ? 'sell' : 'hold')));
+                    const childAdviceText = childAdviceAction === 'buy'
+                        ? `买入 ${Math.abs(childAdviceUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : childAdviceAction === 'sell'
+                            ? `卖出 ${Math.abs(childAdviceUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : '无需调仓';
+                    const childRebalanceClass = childAdviceAction === 'buy'
+                        ? 'text-emerald-300'
+                        : childAdviceAction === 'sell'
+                            ? 'text-amber-300'
+                            : 'text-slate-400';
+
+                    rows.push(`
+                        <tr data-detail-parent="${item.id}" class="hidden bg-slate-950/70">
+                            <td class="px-4 py-3 pl-8 text-slate-400">
+                                <span class="inline-flex items-center gap-2">
+                                    <span class="text-slate-600">└</span>
+                                    ${childName}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-right text-slate-400">${childValueDisplay}</td>
+                            <td class="px-4 py-3 text-right text-slate-400">${childWeightPct}%</td>
+                            <td class="px-4 py-3 text-right text-slate-400">${childTargetPct}%</td>
+                            <td class="px-4 py-3 text-right ${childDeviationClass}">${childDeviationPct}%</td>
+                            <td class="px-4 py-3 text-right text-slate-400">${childAbsDeviationPct}%</td>
+                            <td class="px-4 py-3 text-right ${childRebalanceClass}">${childAdviceText}</td>
+                        </tr>
+                    `);
+                });
+            }
+        });
+
+        this.tokensBody.innerHTML = rows.join('');
+        this.syncDetailGroupVisibility();
 
         this.renderSummaryRow(advice);
     }

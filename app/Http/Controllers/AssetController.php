@@ -124,6 +124,9 @@ class AssetController extends Controller
                     'name' => trim((string) ($item->name ?? '')),
                     'symbols' => $symbols,
                     'target_pct' => round((float) ($item->target_pct ?? 0), 4),
+                    'symbol_targets' => is_array($item->symbol_targets ?? null) ? array_map(function ($v) {
+                        return max(0, (float) $v);
+                    }, $item->symbol_targets) : [],
                 ];
             })
             ->sortBy(function ($item) {
@@ -139,6 +142,8 @@ class AssetController extends Controller
         $v = $request->validate([
             'name' => 'required|string|max:80',
             'target_pct' => 'nullable|numeric|min:0|max:100',
+            'symbol_targets' => 'nullable|array',
+            'symbol_targets.*' => 'numeric|min:0|max:100',
             'symbols' => 'nullable|array',
             'symbols.*' => 'string|max:30',
         ]);
@@ -171,6 +176,7 @@ class AssetController extends Controller
             'name' => $name,
             'symbols' => $symbols,
             'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
+            'symbol_targets' => is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [],
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -200,6 +206,7 @@ class AssetController extends Controller
                 'name' => $name,
                 'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
                 'symbols' => $symbols,
+                'symbol_targets' => is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [],
             ],
         ]);
     }
@@ -211,6 +218,8 @@ class AssetController extends Controller
             'symbols' => 'array',
             'symbols.*' => 'string|max:30',
             'target_pct' => 'nullable|numeric|min:0|max:100',
+            'symbol_targets' => 'nullable|array',
+            'symbol_targets.*' => 'numeric|min:0|max:100',
         ]);
 
         $symbols = collect($v['symbols'] ?? [])
@@ -262,6 +271,10 @@ class AssetController extends Controller
 
         if ($request->has('target_pct')) {
             $updateData['target_pct'] = max(0, (float) ($v['target_pct'] ?? 0));
+        }
+
+        if ($request->has('symbol_targets')) {
+            $updateData['symbol_targets'] = is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [];
         }
 
         $updated = DB::table('asset_categories')
@@ -463,6 +476,9 @@ class AssetController extends Controller
                     'name' => trim((string) ($item->name ?? '')),
                     'target_pct' => max(0, (float) ($item->target_pct ?? 0)),
                     'symbols' => $symbols,
+                    'symbol_targets' => is_array($item->symbol_targets ?? null) ? array_map(function ($v) {
+                        return max(0, (float) $v);
+                    }, $item->symbol_targets) : [],
                 ];
             })
             ->filter(function ($item) {
@@ -514,6 +530,10 @@ class AssetController extends Controller
                 'name' => trim((string) ($item['name'] ?? '')) ?: $fallbackName,
                 'target_pct' => max(0, (float) ($item['target_pct'] ?? 0)),
                 'symbols' => $symbols,
+                'symbol_targets' => collect($item['symbol_targets'] ?? [])->mapWithKeys(function ($v, $k) {
+                    $sym = strtoupper(trim((string) $k));
+                    return [$sym => max(0, (float) $v)];
+                })->all(),
             ];
         })->values()->all();
     }
@@ -1791,24 +1811,73 @@ class AssetController extends Controller
         });
 
         $allocations = collect($this->resolveBalanceAlertAllocations($input));
-        $allocationRows = $allocations->map(function ($item) use ($tokenValueMap, $totalValue) {
+
+        // collect symbol-level target inputs from request (optional)
+        $symbolTargets = collect($input['target_allocations'] ?? [])->mapWithKeys(function ($row) {
+            $sym = strtoupper(trim((string) ($row['symbol'] ?? '')));
+            return [$sym => max(0, (float) ($row['target_pct'] ?? 0))];
+        });
+
+        // Expand allocations: if a category has multiple symbols and symbol-level targets are provided,
+        // split the category into per-symbol rows using relative weights inside the category.
+        $expanded = [];
+        foreach ($allocations as $item) {
             $symbols = collect($item['symbols'] ?? [])->unique()->values();
-            $allocationValue = $symbols->sum(function ($symbol) use ($tokenValueMap) {
-                return (float) ($tokenValueMap->get($symbol, 0));
+            $categoryTargetInput = max(0, (float) ($item['target_pct'] ?? 0));
+
+            // merge DB-stored symbol_targets (if any) with request-level overrides (request wins)
+            $dbSymbolTargets = collect($item['symbol_targets'] ?? [])->mapWithKeys(function ($v, $k) {
+                $sym = strtoupper(trim((string) $k));
+                return [$sym => max(0, (float) $v)];
             });
 
-            $weight = $totalValue > 0 ? ($allocationValue / $totalValue) * 100 : 0;
+            $combinedSymbolTargets = $dbSymbolTargets->merge($symbolTargets);
 
-            return [
-                'id' => (string) $item['id'],
-                'name' => (string) $item['name'],
-                'value' => round($allocationValue, 2),
-                'current_value' => (float) $allocationValue,
-                'weight_pct' => round($weight, 2),
-                'target_pct_input' => max(0, (float) ($item['target_pct'] ?? 0)),
-                'symbols' => $symbols->all(),
-            ];
-        })->values();
+            // sum of symbol-level targets for symbols inside this category
+            $sumInCategory = $symbols->sum(function ($s) use ($combinedSymbolTargets) {
+                return (float) ($combinedSymbolTargets->get($s, 0));
+            });
+
+            if ($symbols->count() > 1 && $sumInCategory > 0) {
+                foreach ($symbols as $symbol) {
+                    $symbolValue = (float) ($tokenValueMap->get($symbol, 0));
+                    $weight = $totalValue > 0 ? ($symbolValue / $totalValue) * 100 : 0;
+                    $relative = $combinedSymbolTargets->get($symbol, 0) / $sumInCategory;
+                    $symbolTargetInput = $categoryTargetInput * $relative;
+
+                    $expanded[] = [
+                        'id' => (string) $item['id'] . '|' . $symbol,
+                        'name' => (string) $symbol,
+                        'value' => round($symbolValue, 2),
+                        'current_value' => $symbolValue,
+                        'weight_pct' => round($weight, 2),
+                        'target_pct_input' => (float) $symbolTargetInput,
+                        'symbols' => [$symbol],
+                    ];
+                }
+            } else {
+                $allocationValue = $symbols->sum(function ($symbol) use ($tokenValueMap) {
+                    return (float) ($tokenValueMap->get($symbol, 0));
+                });
+
+                $weight = $totalValue > 0 ? ($allocationValue / $totalValue) * 100 : 0;
+
+                $expanded[] = [
+                    'id' => (string) $item['id'],
+                    'name' => (string) $item['name'],
+                    'value' => round($allocationValue, 2),
+                    'current_value' => (float) $allocationValue,
+                    'weight_pct' => round($weight, 2),
+                    'target_pct_input' => max(0, (float) ($item['target_pct'] ?? 0)),
+                    'symbols' => $symbols->all(),
+                ];
+            }
+        }
+
+        $allocationRows = collect($expanded)->values();
+        $allocationSourceMap = $allocations->keyBy(function ($item) {
+            return (string) ($item['id'] ?? '');
+        });
 
         $inputTargetTotal = (float) $allocationRows->sum('target_pct_input');
         $hasTargets = $allocationRows->isNotEmpty() && $inputTargetTotal > 0;
@@ -1827,7 +1896,81 @@ class AssetController extends Controller
         })->values()->all();
 
         $rebalanceResult = app(RebalanceService::class)->calculateProportional($normalizedAllocations, (float) $totalValue, $rebalanceThreshold);
-        $items = collect($rebalanceResult['items'] ?? [])->sortByDesc('abs_deviation_pct')->values();
+        $flatItems = collect($rebalanceResult['items'] ?? [])->values();
+
+        $groupedItems = $flatItems
+            ->groupBy(function ($item) {
+                $id = (string) ($item['id'] ?? '');
+                return str_contains($id, '|') ? explode('|', $id, 2)[0] : $id;
+            })
+            ->map(function ($groupItems, $groupId) use ($allocationSourceMap) {
+                $groupItems = collect($groupItems)->values();
+                $source = $allocationSourceMap->get($groupId, []);
+                $children = $groupItems->map(function ($item) use ($groupId) {
+                    $child = $item;
+                    $child['group_id'] = $groupId;
+                    $child['is_child'] = true;
+                    return $child;
+                })->sortByDesc('abs_deviation_pct')->values()->all();
+
+                // Use explicit float-safe summation to avoid collection sum quirks with string values
+                $rows = $groupItems->all();
+                $currentValue = array_sum(array_map(function ($r) { return (float) ($r['current_value'] ?? 0); }, $rows));
+                $targetValue = array_sum(array_map(function ($r) { return (float) ($r['new_target_value'] ?? 0); }, $rows));
+                $currentPct = array_sum(array_map(function ($r) { return (float) ($r['current_pct'] ?? 0); }, $rows));
+                $targetPct = array_sum(array_map(function ($r) { return (float) ($r['target_pct'] ?? 0); }, $rows));
+                $rebalancedTargetPct = array_sum(array_map(function ($r) { return (float) ($r['new_target_pct'] ?? 0); }, $rows));
+                // Deviation should be computed against the configured target, not the threshold-adjusted target
+                $deviationPct = $targetPct - $currentPct;
+                $adviceUsd = array_sum(array_map(function ($r) { return (float) ($r['advice_usd'] ?? 0); }, $rows));
+                $absDeviation = abs($deviationPct);
+
+                $parent = [
+                    'id' => $groupId,
+                    'name' => (string) ($source['name'] ?? ($groupItems->first()['name'] ?? $groupId)),
+                    'value' => round($currentValue, 2),
+                    'current_value' => (float) $currentValue,
+                    'current_pct' => (float) $currentPct,
+                    'weight_pct' => (float) $currentPct,
+                    'target_pct' => (float) $targetPct,
+                    'new_target_pct' => (float) $rebalancedTargetPct,
+                    'new_target_value' => (float) $targetValue,
+                    'deviation_pct' => (float) $deviationPct,
+                    'abs_deviation_pct' => (float) $absDeviation,
+                    'advice_usd' => (float) $adviceUsd,
+                    'advice_action' => $adviceUsd > 0 ? 'buy' : ($adviceUsd < 0 ? 'sell' : 'hold'),
+                    'is_active' => true,
+                    'symbols' => array_values(array_unique((array) ($source['symbols'] ?? []))),
+                    'children' => $children,
+                ];
+
+                // Remove empty children key to avoid frontend showing toggles
+                if (empty($children)) {
+                    unset($parent['children']);
+                }
+
+                // Log parent aggregation for debugging
+
+                // Log parent aggregation for debugging
+                try {
+                    \Illuminate\Support\Facades\Log::info('balance-alert: parent-agg', ['group' => $groupId, 'current_pct' => $currentPct, 'target_pct' => $targetPct, 'deviation_pct' => $deviationPct, 'advice_usd' => $adviceUsd]);
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+
+                return $parent;
+            })
+            ->sortByDesc('abs_deviation_pct')
+            ->values();
+
+        $items = $groupedItems;
+        // DEBUG: dump flat and grouped items to log (INFO level so it appears in default logs)
+        try {
+            \Illuminate\Support\Facades\Log::info('balance-alert: flat items', ['flat_items' => $flatItems->toArray()]);
+            \Illuminate\Support\Facades\Log::info('balance-alert: grouped items', ['items' => $items->toArray()]);
+        } catch (\Throwable $e) {
+            // ignore logging errors
+        }
         $maxDeviation = (float) ($rebalanceResult['max_deviation_pct'] ?? ($items->isEmpty() ? 0 : (float) ($items->first()['abs_deviation_pct'] ?? 0)));
         $normalizedTargetTotal = (float) ($rebalanceResult['normalized_total_pct'] ?? 0);
         $now = Carbon::now('Asia/Kuala_Lumpur');
