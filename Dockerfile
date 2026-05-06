@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y \
     unzip \
     libssl-dev \
     pkg-config \
-    libcurl4-openssl-dev
+    libcurl4-openssl-dev \
+    python3 \
+    python3-pip
+
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
 RUN pecl install mongodb && docker-php-ext-enable mongodb
 
