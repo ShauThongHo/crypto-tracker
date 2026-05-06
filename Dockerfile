@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libcurl4-openssl-dev \
     python3 \
-    python3-pil
+    python3-pil \
+    fonts-wqy-microhei \
+    fonts-noto-cjk
 
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
