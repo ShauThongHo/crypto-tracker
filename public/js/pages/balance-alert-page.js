@@ -1246,7 +1246,7 @@ class BalanceAlertPage {
             this.sendBtn.disabled = true;
             this.sendBtn.textContent = '发送中...';
 
-            const res = await fetch('/api/balance-alert/notify', {
+            const res = await fetch('/api/balance-alert/notify-image', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1266,12 +1266,12 @@ class BalanceAlertPage {
                 this.renderSnapshot(data.snapshot);
             }
 
-            this.setStatus('success', 'Discord 提醒已发送。');
+            this.setStatus('success', 'Discord 图片提醒已发送。');
         } catch (error) {
             this.setStatus('error', error.message || '发送失败');
         } finally {
             this.sendBtn.disabled = false;
-            this.sendBtn.textContent = '发送 Discord 提醒';
+            this.sendBtn.textContent = '发送图片提醒';
         }
     }
 }

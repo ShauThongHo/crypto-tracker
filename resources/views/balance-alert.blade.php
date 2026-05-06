@@ -138,7 +138,7 @@
 
                     <div class="flex flex-wrap gap-3 pt-2">
                         <button id="checkBtn" class="px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm transition-all">检查偏离</button>
-                        <button id="sendBtn" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-all">发送 Discord 提醒</button>
+                        <button id="sendBtn" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-all">发送图片提醒</button>
                     </div>
 
                     <div id="statusBox" class="hidden rounded-xl border p-3 text-sm"></div>

@@ -547,34 +547,85 @@ class AssetController extends Controller
 
     private function buildBalanceAlertDiscordContent(array $snapshot, array $prefixLines = []): string
     {
-        $topItems = collect($snapshot['items'] ?? [])->take(5)->map(function ($item) {
+        // Localize level text
+        $levelMap = [
+            'force' => '强制平衡',
+            'rebalance' => '执行平衡',
+            'prepare' => '准备资金',
+            'none' => '无需提醒',
+        ];
+
+        $level = (string) ($snapshot['level'] ?? 'none');
+        $levelText = $levelMap[$level] ?? $level;
+
+        $inWindow = (bool) data_get($snapshot, 'window.in_rebalance_window', false);
+        $windowText = $inWindow ? '在平衡窗口' : '未在平衡窗口';
+
+        $now = (string) ($snapshot['now'] ?? now()->toDateTimeString());
+        $date = substr($now, 0, 10);
+
+        $maxDev = number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2);
+
+        // Build items as a monospaced table inside a code block for Discord (show ALL items)
+        // Define column widths and format rows with pipe separators for clearer Discord display
+        $colWidths = [14, 7, 7, 12];
+
+        $rows = collect($snapshot['items'] ?? [])->map(function ($item) use ($colWidths) {
             $action = (string) ($item['advice_action'] ?? 'hold');
             $actionText = $action === 'buy' ? '买入' : ($action === 'sell' ? '卖出' : '持有');
+            $name = (string) ($item['name'] ?? $item['id'] ?? '未命名');
+            // Ensure name is not too long
+            if (mb_strlen($name) > $colWidths[0]) {
+                $name = mb_substr($name, 0, $colWidths[0] - 1) . '…';
+            }
 
-            return sprintf(
-                "%s | 当前 %.2f%% | 目标 %.2f%% | 建议 %s $%s",
-                (string) ($item['name'] ?? $item['id'] ?? '未命名'),
-                (float) ($item['current_pct'] ?? 0),
-                (float) ($item['target_pct'] ?? 0),
-                $actionText,
-                number_format(abs((float) ($item['advice_usd'] ?? 0)), 2, '.', ',')
-            );
-        })->implode("\n");
+            $current = (float) ($item['current_pct'] ?? 0);
+            $target = (float) ($item['target_pct'] ?? 0);
+            $advice = number_format(abs((float) ($item['advice_usd'] ?? 0)), 2, '.', ',');
 
-        $summaryText = (string) data_get($snapshot, 'advice.summary.text', $snapshot['message'] ?? '');
+            // Use pipe-separated columns with fixed widths
+            return sprintf("| %-{$colWidths[0]}s | %{$colWidths[1]}s | %{$colWidths[2]}s | %{$colWidths[3]}s |", $name, number_format($current, 2) . '%', number_format($target, 2) . '%', ($actionText . ' $' . $advice));
+        })->all();
 
-        $content = array_merge($prefixLines, [
+        // Build header with same pipe-separated format
+        $tableHeader = sprintf("| %-{$colWidths[0]}s | %{$colWidths[1]}s | %{$colWidths[2]}s | %{$colWidths[3]}s |", '名称', '当前', '目标', '建议');
+
+        $contentLines = array_merge($prefixLines, [
             '【资产平衡提醒】',
-            '等级: ' . (string) ($snapshot['level'] ?? 'none'),
-            '时间: ' . (string) ($snapshot['now'] ?? now()->toDateTimeString()),
-            '最大偏离: ' . number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2) . '%',
-            '说明: ' . $summaryText,
+            '等级: ' . $levelText,
+            '平衡时机: ' . $windowText,
+            '日期: ' . $date,
+            '最大偏离: ' . $maxDev . '%',
             '',
-            '偏离明细（Top 5）:',
-            $topItems !== '' ? $topItems : '暂无数据',
+            '偏离明细:',
+            '```',
         ]);
 
-        return implode("\n", $content);
+        // build a pipe-separated separator line matching column widths, e.g. |--------------|-------|-------|------------|
+        $sepParts = array_map(function ($w) {
+            return str_repeat('-', $w + 2);
+        }, $colWidths);
+        $sep = '|' . implode('|', $sepParts) . '|';
+
+        // Top separator, header, then separator to create boxed header
+        $contentLines[] = $sep;
+        $contentLines[] = $tableHeader;
+        $contentLines[] = $sep;
+
+        if (!empty($rows)) {
+            foreach ($rows as $r) {
+                $contentLines[] = $r;
+                // add separator after each row to visually split rows
+                $contentLines[] = $sep;
+            }
+        } else {
+            $contentLines[] = '暂无数据';
+            $contentLines[] = $sep;
+        }
+
+        $contentLines[] = '```';
+
+        return implode("\n", $contentLines);
     }
 
     private function attemptHealthCheckAutoNotify(): array
@@ -1773,6 +1824,140 @@ class AssetController extends Controller
             'message' => '提醒已发送',
             'snapshot' => $snapshot,
         ]);
+    }
+
+    /**
+     * Generate a PNG image of the balance alert table via a headless Puppeteer script
+     * and send it to the provided Discord webhook as an attachment.
+     */
+    public function sendBalanceAlertImage(Request $request)
+    {
+        $v = $request->validate([
+            'webhook_url' => 'required|url',
+            'prepare_threshold' => 'nullable|numeric|min:0|max:100',
+            'rebalance_threshold' => 'nullable|numeric|min:0|max:100',
+            'force_threshold' => 'nullable|numeric|min:0|max:100',
+        ]);
+
+        $snapshot = $this->buildBalanceAlertSnapshotPayload($v);
+        $tmpDir = sys_get_temp_dir();
+        $jsonPath = tempnam($tmpDir, 'bal_alert_') . '.json';
+        $pngPath = tempnam($tmpDir, 'bal_alert_') . '.png';
+
+        file_put_contents($jsonPath, json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        $pythonScript = base_path('tools/render_balance_alert_table.py');
+        if (!file_exists($pythonScript)) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            return response()->json(['status' => 'error', 'message' => 'Render script missing: ' . $pythonScript], 500);
+        }
+
+        $pythonBin = $this->resolvePythonBinary();
+        $processOutput = '';
+
+        try {
+            if (class_exists('\Symfony\\Component\\Process\\Process')) {
+                $process = new \Symfony\Component\Process\Process([$pythonBin, $pythonScript, $jsonPath, $pngPath]);
+                $process->setTimeout(30);
+                $process->run();
+                $processOutput = $process->getOutput() . $process->getErrorOutput();
+                if (!$process->isSuccessful()) {
+                    throw new \RuntimeException('Image renderer failed: ' . $processOutput);
+                }
+            } else {
+                $cmd = '"' . str_replace('"', '\\"', $pythonBin) . '" ' . escapeshellarg($pythonScript) . ' ' . escapeshellarg($jsonPath) . ' ' . escapeshellarg($pngPath) . ' 2>&1';
+                $processOutput = shell_exec($cmd);
+                if (!file_exists($pngPath) || filesize($pngPath) === 0) {
+                    throw new \RuntimeException('Image renderer failed (shell): ' . $processOutput);
+                }
+            }
+        } catch (\Throwable $e) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            return response()->json(['status' => 'error', 'message' => 'Failed to render image: ' . $e->getMessage(), 'output' => $processOutput], 500);
+        }
+
+        if (!file_exists($pngPath) || filesize($pngPath) === 0) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            return response()->json(['status' => 'error', 'message' => 'Generated PNG missing or empty', 'output' => $processOutput], 500);
+        }
+
+        $levelMap = [
+            'force' => '强制平衡',
+            'rebalance' => '执行平衡',
+            'prepare' => '准备资金',
+            'none' => '无需提醒',
+        ];
+        $level = (string) ($snapshot['level'] ?? 'none');
+        $levelText = $levelMap[$level] ?? $level;
+        $windowText = (bool) data_get($snapshot, 'window.in_rebalance_window', false) ? '在平衡窗口' : '未在平衡窗口';
+        $date = substr((string) ($snapshot['now'] ?? now()->toDateTimeString()), 0, 10);
+        $maxDev = number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2);
+        $content = implode("\n", [
+            '【资产平衡提醒】',
+            '等级: ' . $levelText,
+            '平衡时机: ' . $windowText,
+            '日期: ' . $date,
+            '最大偏离: ' . $maxDev . '%',
+            '',
+            '偏离明细:',
+        ]);
+
+        // Send to Discord webhook as attachment
+        try {
+            $res = \Illuminate\Support\Facades\Http::attach('file', file_get_contents($pngPath), 'balance_alert.png')
+                ->post($v['webhook_url'], ['content' => $content]);
+
+            if (!$res->successful()) {
+                throw new \RuntimeException('Webhook returned ' . $res->status() . ': ' . $res->body());
+            }
+        } catch (\Throwable $e) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            return response()->json(['status' => 'error', 'message' => 'Failed to send webhook: ' . $e->getMessage()], 500);
+        }
+
+        @unlink($jsonPath);
+        @unlink($pngPath);
+
+        return response()->json(['status' => 'success', 'message' => '图片已发送']);
+    }
+
+    private function resolvePythonBinary(): string
+    {
+        $envPython = trim((string) env('PYTHON_BIN', ''));
+        if ($envPython !== '' && file_exists($envPython)) {
+            return $envPython;
+        }
+
+        $candidates = [
+            base_path('.venv/Scripts/python.exe'),
+            'C:\\Users\\hosha\\Desktop\\crypto-tracker\\.venv\\Scripts\\python.exe',
+            'C:\\Python312\\python.exe',
+            'C:\\Program Files\\Python312\\python.exe',
+            'C:\\Program Files\\Python311\\python.exe',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        $whereOutput = @shell_exec('where.exe python 2>NUL');
+        if (is_string($whereOutput) && trim($whereOutput) !== '') {
+            $lines = preg_split('/\r\n|\r|\n/', trim($whereOutput));
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line !== '' && file_exists($line)) {
+                    return $line;
+                }
+            }
+        }
+
+        return 'python';
     }
 
     private function buildBalanceAlertSnapshotPayload(array $input): array

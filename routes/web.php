@@ -68,6 +68,7 @@ Route::prefix('api')->group(function () {
     Route::get('/balance-alert/snapshot', [AssetController::class, 'getBalanceAlertSnapshot']);
     Route::post('/balance-alert/snapshot', [AssetController::class, 'getBalanceAlertSnapshot']);
     Route::post('/balance-alert/notify', [AssetController::class, 'sendBalanceAlert']);
+    Route::post('/balance-alert/notify-image', [AssetController::class, 'sendBalanceAlertImage']);
     Route::get('/balance-alert/settings', [AssetController::class, 'getBalanceAlertSettings']);
     Route::put('/balance-alert/settings', [AssetController::class, 'updateBalanceAlertSettings']);
 
