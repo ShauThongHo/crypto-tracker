@@ -545,89 +545,6 @@ class AssetController extends Controller
         return max(60, (int) $seconds);
     }
 
-    private function buildBalanceAlertDiscordContent(array $snapshot, array $prefixLines = []): string
-    {
-        // Localize level text
-        $levelMap = [
-            'force' => '强制平衡',
-            'rebalance' => '执行平衡',
-            'prepare' => '准备资金',
-            'none' => '无需提醒',
-        ];
-
-        $level = (string) ($snapshot['level'] ?? 'none');
-        $levelText = $levelMap[$level] ?? $level;
-
-        $inWindow = (bool) data_get($snapshot, 'window.in_rebalance_window', false);
-        $windowText = $inWindow ? '在平衡窗口' : '未在平衡窗口';
-
-        $now = (string) ($snapshot['now'] ?? now()->toDateTimeString());
-        $date = substr($now, 0, 10);
-
-        $maxDev = number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2);
-
-        // Build items as a monospaced table inside a code block for Discord (show ALL items)
-        // Define column widths and format rows with pipe separators for clearer Discord display
-        $colWidths = [14, 7, 7, 12];
-
-        $rows = collect($snapshot['items'] ?? [])->map(function ($item) use ($colWidths) {
-            $action = (string) ($item['advice_action'] ?? 'hold');
-            $actionText = $action === 'buy' ? '买入' : ($action === 'sell' ? '卖出' : '持有');
-            $name = (string) ($item['name'] ?? $item['id'] ?? '未命名');
-            // Ensure name is not too long
-            if (mb_strlen($name) > $colWidths[0]) {
-                $name = mb_substr($name, 0, $colWidths[0] - 1) . '…';
-            }
-
-            $current = (float) ($item['current_pct'] ?? 0);
-            $target = (float) ($item['target_pct'] ?? 0);
-            $advice = number_format(abs((float) ($item['advice_usd'] ?? 0)), 2, '.', ',');
-
-            // Use pipe-separated columns with fixed widths
-            return sprintf("| %-{$colWidths[0]}s | %{$colWidths[1]}s | %{$colWidths[2]}s | %{$colWidths[3]}s |", $name, number_format($current, 2) . '%', number_format($target, 2) . '%', ($actionText . ' $' . $advice));
-        })->all();
-
-        // Build header with same pipe-separated format
-        $tableHeader = sprintf("| %-{$colWidths[0]}s | %{$colWidths[1]}s | %{$colWidths[2]}s | %{$colWidths[3]}s |", '名称', '当前', '目标', '建议');
-
-        $contentLines = array_merge($prefixLines, [
-            '【资产平衡提醒】',
-            '等级: ' . $levelText,
-            '平衡时机: ' . $windowText,
-            '日期: ' . $date,
-            '最大偏离: ' . $maxDev . '%',
-            '',
-            '偏离明细:',
-            '```',
-        ]);
-
-        // build a pipe-separated separator line matching column widths, e.g. |--------------|-------|-------|------------|
-        $sepParts = array_map(function ($w) {
-            return str_repeat('-', $w + 2);
-        }, $colWidths);
-        $sep = '|' . implode('|', $sepParts) . '|';
-
-        // Top separator, header, then separator to create boxed header
-        $contentLines[] = $sep;
-        $contentLines[] = $tableHeader;
-        $contentLines[] = $sep;
-
-        if (!empty($rows)) {
-            foreach ($rows as $r) {
-                $contentLines[] = $r;
-                // add separator after each row to visually split rows
-                $contentLines[] = $sep;
-            }
-        } else {
-            $contentLines[] = '暂无数据';
-            $contentLines[] = $sep;
-        }
-
-        $contentLines[] = '```';
-
-        return implode("\n", $contentLines);
-    }
-
     private function attemptHealthCheckAutoNotify(): array
     {
         $config = $this->getBalanceAlertAutomationConfig();
@@ -695,24 +612,44 @@ class AssetController extends Controller
             ];
         }
 
-        $content = $this->buildBalanceAlertDiscordContent($snapshot, [
-            '【自动健康检查】',
-            '等级: ' . $level,
-            '来源: /health-check',
-            '触发计数: ' . $currentCount . '/2',
-            '窗口状态: ' . ((bool) data_get($decision, 'in_window', false) ? 'in_window' : 'out_of_window'),
-        ]);
+        // Generate PNG image for health check notification
+        $tmpDir = sys_get_temp_dir();
+        $jsonPath = tempnam($tmpDir, 'hc_alert_') . '.json';
+        $pngPath = tempnam($tmpDir, 'hc_alert_') . '.png';
 
-        $res = Http::timeout(10)->post($config['webhook_url'], [
-            'content' => $content,
-        ]);
+        file_put_contents($jsonPath, json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
-        if (!$res->successful()) {
+        $pythonScript = base_path('tools/render_balance_alert_table.py');
+        $pythonBin = $this->resolvePythonBinary();
+        $processOutput = '';
+
+        try {
+            if (class_exists('\Symfony\\Component\\Process\\Process')) {
+                $process = new \Symfony\Component\Process\Process([$pythonBin, $pythonScript, $jsonPath, $pngPath]);
+                $process->setTimeout(30);
+                $process->run();
+                $processOutput = $process->getOutput() . $process->getErrorOutput();
+                if (!$process->isSuccessful()) {
+                    throw new \RuntimeException('Image renderer failed: ' . $processOutput);
+                }
+            } else {
+                $cmd = '"' . str_replace('"', '\\"', $pythonBin) . '" ' . escapeshellarg($pythonScript) . ' ' . escapeshellarg($jsonPath) . ' ' . escapeshellarg($pngPath) . ' 2>&1';
+                $processOutput = shell_exec($cmd);
+                if (!file_exists($pngPath) || filesize($pngPath) === 0) {
+                    throw new \RuntimeException('Image renderer failed (shell): ' . $processOutput);
+                }
+            }
+        } catch (\Throwable $e) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            Log::error('Health check notify image render failed', [
+                'error' => $e->getMessage(),
+                'output' => $processOutput,
+            ]);
             return [
                 'sent' => false,
-                'reason' => 'webhook_failed',
-                'http_status' => $res->status(),
-                'response' => $res->body(),
+                'reason' => 'render_failed',
+                'error' => $e->getMessage(),
                 'count' => $currentCount,
                 'required_count' => 2,
                 'level' => $level,
@@ -720,6 +657,72 @@ class AssetController extends Controller
                 'in_window' => (bool) data_get($decision, 'in_window', false),
             ];
         }
+
+        if (!file_exists($pngPath) || filesize($pngPath) === 0) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            Log::error('Health check notify image missing', [
+                'output' => $processOutput,
+            ]);
+            return [
+                'sent' => false,
+                'reason' => 'image_missing',
+                'count' => $currentCount,
+                'required_count' => 2,
+                'level' => $level,
+                'webhook_source' => $config['webhook_source'],
+                'in_window' => (bool) data_get($decision, 'in_window', false),
+            ];
+        }
+
+        $levelMap = [
+            'force' => '强制平衡',
+            'rebalance' => '执行平衡',
+            'prepare' => '准备资金',
+            'none' => '无需提醒',
+        ];
+        $levelText = $levelMap[$level] ?? $level;
+        $windowText = (bool) data_get($snapshot, 'window.in_rebalance_window', false) ? '在平衡窗口' : '未在平衡窗口';
+        $date = substr((string) ($snapshot['now'] ?? now()->toDateTimeString()), 0, 10);
+        $maxDev = number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2);
+        $content = implode("\n", [
+            '【自动健康检查】',
+            '等级: ' . $levelText,
+            '平衡时机: ' . $windowText,
+            '日期: ' . $date,
+            '最大偏离: ' . $maxDev . '%',
+            '触发计数: ' . $currentCount . '/2',
+            '',
+            '偏离明细:',
+        ]);
+
+        try {
+            $res = Http::timeout(30)->attach('file', file_get_contents($pngPath), 'health_check_alert.png')
+                ->post($config['webhook_url'], ['content' => $content]);
+
+            if (!$res->successful()) {
+                throw new \RuntimeException('Webhook returned ' . $res->status() . ': ' . $res->body());
+            }
+        } catch (\Throwable $e) {
+            @unlink($jsonPath);
+            @unlink($pngPath);
+            Log::error('Health check notify webhook failed', [
+                'error' => $e->getMessage(),
+            ]);
+            return [
+                'sent' => false,
+                'reason' => 'webhook_failed',
+                'error' => $e->getMessage(),
+                'count' => $currentCount,
+                'required_count' => 2,
+                'level' => $level,
+                'webhook_source' => $config['webhook_source'],
+                'in_window' => (bool) data_get($decision, 'in_window', false),
+            ];
+        }
+
+        @unlink($jsonPath);
+        @unlink($pngPath);
 
         Cache::put($sentKey, true, $ttl);
 
@@ -1773,61 +1776,8 @@ class AssetController extends Controller
         return $value;
     }
 
-    public function sendBalanceAlert(Request $request)
-    {
-        $v = $request->validate([
-            'webhook_url' => 'required|url',
-            'prepare_threshold' => 'nullable|numeric|min:0|max:100',
-            'rebalance_threshold' => 'nullable|numeric|min:0|max:100',
-            'force_threshold' => 'nullable|numeric|min:0|max:100',
-            'allocations' => 'nullable|array',
-            'allocations.*.id' => 'nullable|string|max:80',
-            'allocations.*.name' => 'nullable|string|max:60',
-            'allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
-            'allocations.*.symbols' => 'nullable|array',
-            'allocations.*.symbols.*' => 'string|max:30',
-            'target_allocations' => 'nullable|array',
-            'target_allocations.*.symbol' => 'required|string|max:30',
-            'target_allocations.*.target_pct' => 'required|numeric|min:0|max:100',
-            'category_allocations' => 'nullable|array',
-            'category_allocations.*.name' => 'required|string|max:60',
-            'category_allocations.*.target_pct' => 'nullable|numeric|min:0|max:100',
-            'category_allocations.*.symbols' => 'nullable|array',
-            'category_allocations.*.symbols.*' => 'string|max:30',
-        ]);
-
-        $prepareThreshold = (float) ($v['prepare_threshold'] ?? 3.0);
-        $rebalanceThreshold = (float) ($v['rebalance_threshold'] ?? 5.0);
-        $forceThreshold = (float) ($v['force_threshold'] ?? 7.5);
-
-        $snapshot = $this->buildBalanceAlertSnapshotPayload($v);
-        $content = $this->buildBalanceAlertDiscordContent($snapshot, [
-            '【资产平衡提醒】',
-            '阈值: 准备 ' . number_format($prepareThreshold, 2) . '% / 平衡 ' . number_format($rebalanceThreshold, 2) . '% / 强制 ' . number_format($forceThreshold, 2) . '%',
-        ]);
-
-        $res = Http::timeout(10)->post($v['webhook_url'], [
-            'content' => $content,
-        ]);
-
-        if (!$res->successful()) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Discord webhook 发送失败',
-                'http_status' => $res->status(),
-                'response' => $res->body(),
-            ], 500);
-        }
-
-        return response()->json([
-            'status' => 'success',
-            'message' => '提醒已发送',
-            'snapshot' => $snapshot,
-        ]);
-    }
-
     /**
-     * Generate a PNG image of the balance alert table via a headless Puppeteer script
+     * Generate a PNG image of the balance alert table via Python + Pillow
      * and send it to the provided Discord webhook as an attachment.
      */
     public function sendBalanceAlertImage(Request $request)
