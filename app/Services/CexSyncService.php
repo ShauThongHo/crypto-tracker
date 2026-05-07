@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Infrastructure\Exchange\ExchangeAdapterFactory;
 use App\Models\CexSyncedAsset;
 use App\Models\ExchangeAccount;
 use Carbon\Carbon;
@@ -12,6 +13,131 @@ use Illuminate\Support\Facades\Log;
 
 class CexSyncService
 {
+    public function __construct(private readonly ExchangeAdapterFactory $exchangeAdapterFactory = new ExchangeAdapterFactory())
+    {
+    }
+
+    public function getExchangeAccounts(): array
+    {
+        return ExchangeAccount::query()
+            ->get()
+            ->map(function (ExchangeAccount $account) {
+                return [
+                    'id' => (string) $account->id,
+                    'exchange' => (string) $account->exchange,
+                    'label' => (string) ($account->label ?? ''),
+                    'enabled' => (bool) $account->enabled,
+                    'api_key_masked' => $this->maskSecret((string) ($account->api_key_enc ?? '')),
+                    'last_sync_at' => optional($account->last_sync_at)?->toDateTimeString(),
+                    'last_sync_status' => $account->last_sync_status,
+                    'last_error' => $account->last_error,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    public function createExchangeAccount(array $data): array
+    {
+        $account = new ExchangeAccount();
+        $account->exchange = strtolower((string) ($data['exchange'] ?? ''));
+        $account->label = (string) ($data['label'] ?? '');
+        $account->api_key_enc = Crypt::encryptString((string) ($data['api_key'] ?? ''));
+        $account->api_secret_enc = Crypt::encryptString((string) ($data['api_secret'] ?? ''));
+        $account->api_passphrase_enc = isset($data['api_passphrase']) && $data['api_passphrase'] !== ''
+            ? Crypt::encryptString((string) $data['api_passphrase'])
+            : null;
+        $account->enabled = (bool) ($data['enabled'] ?? true);
+        $account->save();
+
+        return [
+            'id' => (string) $account->id,
+            'exchange' => (string) $account->exchange,
+            'label' => (string) ($account->label ?? ''),
+            'enabled' => (bool) $account->enabled,
+        ];
+    }
+
+    public function updateExchangeAccount(string $accountId, array $data): array
+    {
+        $account = ExchangeAccount::query()->findOrFail($accountId);
+
+        if (array_key_exists('exchange', $data)) {
+            $account->exchange = strtolower((string) $data['exchange']);
+        }
+
+        if (array_key_exists('label', $data)) {
+            $account->label = (string) $data['label'];
+        }
+
+        if (!empty($data['api_key'])) {
+            $account->api_key_enc = Crypt::encryptString((string) $data['api_key']);
+        }
+
+        if (!empty($data['api_secret'])) {
+            $account->api_secret_enc = Crypt::encryptString((string) $data['api_secret']);
+        }
+
+        if (array_key_exists('api_passphrase', $data)) {
+            $account->api_passphrase_enc = $data['api_passphrase'] !== ''
+                ? Crypt::encryptString((string) $data['api_passphrase'])
+                : null;
+        }
+
+        if (array_key_exists('enabled', $data)) {
+            $account->enabled = (bool) $data['enabled'];
+        }
+
+        $account->save();
+
+        return [
+            'id' => (string) $account->id,
+            'exchange' => (string) $account->exchange,
+            'label' => (string) ($account->label ?? ''),
+            'enabled' => (bool) $account->enabled,
+        ];
+    }
+
+    public function deleteExchangeAccount(string $accountId): bool
+    {
+        return (bool) ExchangeAccount::query()->whereKey($accountId)->delete();
+    }
+
+    public function syncAccount(string $accountId, string $trigger = 'manual'): array
+    {
+        /** @var ExchangeAccount $account */
+        $account = ExchangeAccount::query()->whereKey($accountId)->firstOrFail();
+
+        return $this->syncSingleAccount($account, $trigger);
+    }
+
+    public function getCexSyncedAssets(): array
+    {
+        return CexSyncedAsset::query()
+            ->get()
+            ->map(static fn (CexSyncedAsset $asset) => $asset->toArray())
+            ->values()
+            ->all();
+    }
+
+    public function getSyncStatus(): array
+    {
+        $accounts = ExchangeAccount::query()->get();
+
+        return [
+            'accounts_total' => $accounts->count(),
+            'accounts_enabled' => $accounts->where('enabled', true)->count(),
+            'last_sync_at' => optional($accounts->sortByDesc('last_sync_at')->first())?->last_sync_at?->toDateTimeString(),
+            'last_sync_status' => optional($accounts->sortByDesc('last_sync_at')->first())?->last_sync_status,
+            'last_error' => optional($accounts->sortByDesc('last_sync_at')->first())?->last_error,
+        ];
+    }
+
+    public function getExchangeRate(): float
+    {
+        return 1.0;
+    }
+
     public function syncEnabledAccounts(string $trigger = 'manual'): array
     {
         $accounts = ExchangeAccount::query()
@@ -75,11 +201,8 @@ class CexSyncService
         }
 
         try {
-            $balances = match ($exchange) {
-                'okx' => $this->fetchOkxBalances($account),
-                'bitget' => $this->fetchBitgetBalances($account),
-                default => throw new \RuntimeException('unsupported_exchange'),
-            };
+            $adapter = $this->exchangeAdapterFactory->make($exchange);
+            $balances = $adapter->fetchBalances($account);
 
             $upserted = $this->upsertSyncedAssets($account, $balances, $slot, $trigger);
 
@@ -527,5 +650,26 @@ class CexSyncService
         }
 
         return Crypt::decryptString($value);
+    }
+
+    private function maskSecret(string $value): string
+    {
+        if (trim($value) === '') {
+            return '';
+        }
+
+        try {
+            $plain = Crypt::decryptString($value);
+        } catch (\Throwable) {
+            $plain = $value;
+        }
+
+        $length = strlen($plain);
+
+        if ($length <= 6) {
+            return str_repeat('*', max(3, $length));
+        }
+
+        return substr($plain, 0, 2) . str_repeat('*', $length - 4) . substr($plain, -2);
     }
 }

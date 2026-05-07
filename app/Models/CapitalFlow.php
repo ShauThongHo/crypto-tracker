@@ -2,14 +2,30 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
-use MongoDB\Laravel\Eloquent\Model as MongoModel; // 如果你用的是 MongoDB 扩展
+use MongoDB\Laravel\Eloquent\Model;
 
-class CapitalFlow extends MongoModel
+class CapitalFlow extends Model
 {
+    protected $connection = 'mongodb';
+
+    protected $collection = 'capital_flows';
+
     protected $fillable = [
-        'type', 'fiat_amount', 'fiat_currency', 
-        'usdt_rate', 'usdt_amount', 'platform', 
-        'transaction_date', 'notes'
+        'user_id',
+        'type',
+        'fiat_amount',
+        'fiat_currency',
+        'usdt_rate',
+        'usdt_amount',
+        'platform',
+        'transaction_date',
+        'notes',
+    ];
+
+    protected $casts = [
+        'fiat_amount' => 'float',
+        'usdt_rate' => 'float',
+        'usdt_amount' => 'float',
+        'transaction_date' => 'datetime',
     ];
 }

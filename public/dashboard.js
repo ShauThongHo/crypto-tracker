@@ -632,7 +632,7 @@ async function saveLowValueAssetFilterSetting(enabled) {
             'Accept': 'application/json',
             'X-CSRF-TOKEN': getCsrfToken(),
         },
-        body: JSON.stringify({ hide_low_value_assets: !!enabled }),
+        body: JSON.stringify({ hide_low_value_assets_enabled: !!enabled }),
     });
 
     if (!res.ok) {
@@ -660,7 +660,7 @@ async function loadLowValueAssetFilterSetting() {
         }
 
         const payload = await res.json().catch(() => ({}));
-        const enabled = !!payload?.data?.hide_low_value_assets;
+        const enabled = !!payload?.data?.hide_low_value_assets_enabled;
 
         toggle.checked = enabled;
         applyLowValueFilterToggleUi(enabled);
@@ -1035,7 +1035,7 @@ function getPortfolioSymbols(data) {
     (data?.children || []).forEach((source) => {
         (source.children || []).forEach((net) => {
             (net.children || []).forEach((token) => {
-                const symbol = String(token.symbol || token.name || '').trim().toUpperCase();
+                const symbol = String(token.symbol || '').trim().toUpperCase();
                 if (symbol) symbolSet.add(symbol);
             });
         });
@@ -1054,7 +1054,9 @@ function getUncategorizedSymbols(data) {
         });
     });
 
-    return allSymbols.filter((symbol) => !assignedSymbols.has(symbol));
+    const unassigned = allSymbols.filter((symbol) => !assignedSymbols.has(symbol));
+    // 确保返回唯一的符号
+    return Array.from(new Set(unassigned));
 }
 
 async function updateCategorySymbols(categoryId, symbols, targetPct) {
@@ -1308,8 +1310,22 @@ function renderPortfolio(data) {
         return;
     }
 
-    (data.children || []).forEach((source, index) => {
-        const isFull = (index % 2 === 0 && index === data.children.length - 1);
+    const hideLowValue = localStorage.getItem('hide_low_value_assets_enabled') === '1';
+    const LOW_VALUE_THRESHOLD = 0.01;
+
+    const filteredData = hideLowValue ? {
+        ...data,
+        children: (data.children || []).map((source) => ({
+            ...source,
+            children: (source.children || []).map((net) => ({
+                ...net,
+                children: (net.children || []).filter((token) => (parseFloat(token.value) || 0) >= LOW_VALUE_THRESHOLD)
+            })).filter((net) => net.children.length > 0)
+        })).filter((source) => source.children.length > 0)
+    } : data;
+
+    (filteredData.children || []).forEach((source, index) => {
+        const isFull = (index % 2 === 0 && index === filteredData.children.length - 1);
         const card = document.createElement('div');
         card.className = `bento-card ${isFull ? 'full-row-card' : ''}`;
 
@@ -1407,15 +1423,18 @@ function updateBreakdownToggleUI() {
 
 function buildAssetAllocationCard(data) {
     const allocations = calculateAssetAllocations(data);
-    if (allocations.length === 0) {
+    const hideLowValue = localStorage.getItem('hide_low_value_assets_enabled') === '1';
+    const LOW_VALUE_THRESHOLD = 1;
+    const filtered = hideLowValue ? allocations.filter((item) => (parseFloat(item.value) || 0) >= LOW_VALUE_THRESHOLD) : allocations;
+    if (filtered.length === 0) {
         return `
             <div class="text-center py-12">
                 <div class="text-slate-400 text-sm">暂无资产可用于占比分析</div>
             </div>`;
     }
 
-    const topPct = allocations[0].percentage;
-    const rows = allocations.map((item, index) => {
+    const topPct = filtered[0].percentage;
+    const rows = filtered.map((item, index) => {
         const barWidth = Math.max(2, Math.round(item.percentage));
         const ratio = topPct > 0 ? (item.percentage / topPct) * 100 : 0;
         return `
