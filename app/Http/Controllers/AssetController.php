@@ -2106,7 +2106,12 @@ class AssetController extends Controller
         } catch (\Throwable $e) {
             // ignore logging errors
         }
-        $maxDeviation = (float) ($rebalanceResult['max_deviation_pct'] ?? ($items->isEmpty() ? 0 : (float) ($items->first()['abs_deviation_pct'] ?? 0)));
+        // Trigger alerts from parent-group deviation so children only affect the sell/buy breakdown.
+        $maxDeviation = (float) ($items->isEmpty()
+            ? ($rebalanceResult['max_deviation_pct'] ?? 0)
+            : (float) $items->max(function ($item) {
+                return (float) ($item['abs_deviation_pct'] ?? 0);
+            }));
         $normalizedTargetTotal = (float) ($rebalanceResult['normalized_total_pct'] ?? 0);
         $now = Carbon::now('Asia/Kuala_Lumpur');
         $isLateMonth = $now->day >= 21;
