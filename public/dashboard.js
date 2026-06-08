@@ -97,8 +97,30 @@ async function refreshLiveExchangeRate() {
 // ==========================================
 // 2. 页面初始化驱动
 // ==========================================
+function bindAssetModalForms() {
+    const addForm = document.getElementById('addAssetForm');
+    if (addForm && !addForm.dataset.bound) {
+        addForm.dataset.bound = 'true';
+        addForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            void window.submitNewAsset(event);
+        });
+    }
+
+    const editForm = document.getElementById('editAssetForm');
+    if (editForm && !editForm.dataset.bound) {
+        editForm.dataset.bound = 'true';
+        editForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            void window.submitEditAsset(event);
+        });
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     console.log("🚀 HST Dashboard 正在启动...");
+
+    bindAssetModalForms();
 
     // 核心修复：无论在哪个页面，优先加载汇率
     await refreshLiveExchangeRate();
@@ -239,7 +261,7 @@ window.changeRange = async (range) => {
 
 // --- 补全：提交资产修改 ---
 window.submitEditAsset = async (event) => {
-    event.preventDefault(); // 阻止表单默认提交行为
+    event?.preventDefault?.(); // 阻止表单默认提交行为
 
     const id = document.getElementById('edit_asset_id').value;
     const amount = document.getElementById('edit_token_amount').value;
@@ -285,7 +307,7 @@ window.submitEditAsset = async (event) => {
 };
 
 window.submitNewAsset = async (event) => {
-    event.preventDefault();
+    event?.preventDefault?.();
     const source_name = document.getElementById('add_source_name').value;
     const token_name = document.getElementById('add_token_name').value;
     const coingecko_id = document.getElementById('add_coingecko_id').value;
