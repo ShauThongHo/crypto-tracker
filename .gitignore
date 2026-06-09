@@ -19,7 +19,6 @@ yarn-error.log
 /.vscode
 # --- Laravel 补充 ---
 .env.*
-!.env.example  # 必须保留 example 以便在 Azure 上参考配置 Key
 /storage/framework/cache/data/*
 /storage/framework/sessions/*
 /storage/framework/views/*
