@@ -2,14 +2,12 @@
 
 namespace App\Console;
 
+use App\Jobs\FetchCoinGeckoPrices;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
 
 class Kernel extends ConsoleKernel
 {
-    /**
-     * Define the application's command schedule.
-     */
     /**
      * Define the application's command schedule.
      */
@@ -19,6 +17,9 @@ class Kernel extends ConsoleKernel
         // 别担心会频繁抓取 API，因为 SyncCryptoData 内部有缓存锁，5分钟只会真正跑一次。
         // 这样改是为了确保 UptimeRobot 无论几点几分戳进来，任务都能被触发。
         $schedule->command('app:sync-crypto-data')->everyFiveMinute();
+
+        // CoinGecko price fetching - every 5 minutes to keep cache warm
+        $schedule->job(new FetchCoinGeckoPrices())->everyFiveMinutes();
 
         // 如果你以后有汇率同步，可以加在这里
         // $schedule->command('app:sync-exchange-rates')->daily();

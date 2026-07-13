@@ -8,11 +8,16 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use App\Models\{CapitalFlow, Asset, CexSyncedAsset, ExchangeAccount};
-use App\Services\{RebalanceService, CexSyncService};
+use App\Services\{RebalanceService, CexSyncService, BalanceAlertService};
+use App\Jobs\GenerateBalanceAlertImage;
 
 class AssetController extends Controller
 {
     private const LOW_VALUE_ASSET_FILTER_THRESHOLD_USD = 0.01;
+
+    public function __construct(
+        private readonly BalanceAlertService $balanceAlertService
+    ) {}
 
     // =========================================================================
     // 1. 核心看板数据 (Dashboard Data)
@@ -89,218 +94,9 @@ class AssetController extends Controller
         return response()->json($tree);
     }
 
-    public function getAssetCategories()
-    {
-        $categories = DB::table('asset_categories')->get()
-            ->map(function ($item) {
-                $rawId = $item->_id ?? ($item->id ?? null);
-                $id = '';
-
-                if (is_object($rawId)) {
-                    if (isset($rawId->{'$oid'})) {
-                        $id = (string) $rawId->{'$oid'};
-                    } elseif (method_exists($rawId, '__toString')) {
-                        $id = (string) $rawId;
-                    } else {
-                        $id = trim((string) json_encode($rawId));
-                    }
-                } elseif ($rawId !== null) {
-                    $id = (string) $rawId;
-                }
-
-                $symbols = collect($item->symbols ?? [])
-                    ->map(function ($symbol) {
-                        return strtoupper(trim((string) $symbol));
-                    })
-                    ->filter(function ($symbol) {
-                        return $symbol !== '';
-                    })
-                    ->unique()
-                    ->values()
-                    ->all();
-
-                return [
-                    'id' => $id,
-                    'name' => trim((string) ($item->name ?? '')),
-                    'symbols' => $symbols,
-                    'target_pct' => round((float) ($item->target_pct ?? 0), 4),
-                    'symbol_targets' => is_array($item->symbol_targets ?? null) ? array_map(function ($v) {
-                        return max(0, (float) $v);
-                    }, $item->symbol_targets) : [],
-                ];
-            })
-            ->sortBy(function ($item) {
-                return mb_strtolower(trim((string) ($item['name'] ?? '')));
-            })
-            ->values();
-
-        return response()->json($categories);
-    }
-
-    public function storeAssetCategory(Request $request)
-    {
-        $v = $request->validate([
-            'name' => 'required|string|max:80',
-            'target_pct' => 'nullable|numeric|min:0|max:100',
-            'symbol_targets' => 'nullable|array',
-            'symbol_targets.*' => 'numeric|min:0|max:100',
-            'symbols' => 'nullable|array',
-            'symbols.*' => 'string|max:30',
-        ]);
-
-        $name = trim((string) $v['name']);
-        if ($name === '') {
-            return response()->json(['status' => 'error', 'message' => '类别名称不能为空'], 422);
-        }
-
-        $exists = DB::table('asset_categories')->get()->first(function ($item) use ($name) {
-            return mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
-        });
-
-        if ($exists) {
-            return response()->json(['status' => 'error', 'message' => '类别已存在'], 422);
-        }
-
-        $symbols = collect($v['symbols'] ?? [])
-            ->map(function ($symbol) {
-                return strtoupper(trim((string) $symbol));
-            })
-            ->filter(function ($symbol) {
-                return $symbol !== '';
-            })
-            ->unique()
-            ->values()
-            ->all();
-
-        DB::table('asset_categories')->insert([
-            'name' => $name,
-            'symbols' => $symbols,
-            'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
-            'symbol_targets' => is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [],
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        $created = DB::table('asset_categories')->get()->first(function ($item) use ($name) {
-            return mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
-        });
-
-        $createdId = '';
-        if ($created) {
-            $rawId = $created->_id ?? ($created->id ?? null);
-            if (is_object($rawId)) {
-                if (isset($rawId->{'$oid'})) {
-                    $createdId = (string) $rawId->{'$oid'};
-                } elseif (method_exists($rawId, '__toString')) {
-                    $createdId = (string) $rawId;
-                }
-            } elseif ($rawId !== null) {
-                $createdId = (string) $rawId;
-            }
-        }
-
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'id' => $createdId,
-                'name' => $name,
-                'target_pct' => max(0, (float) ($v['target_pct'] ?? 0)),
-                'symbols' => $symbols,
-                'symbol_targets' => is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [],
-            ],
-        ]);
-    }
-
-    public function updateAssetCategory(Request $request, $id)
-    {
-        $v = $request->validate([
-            'name' => 'nullable|string|max:80',
-            'symbols' => 'array',
-            'symbols.*' => 'string|max:30',
-            'target_pct' => 'nullable|numeric|min:0|max:100',
-            'symbol_targets' => 'nullable|array',
-            'symbol_targets.*' => 'numeric|min:0|max:100',
-        ]);
-
-        $symbols = collect($v['symbols'] ?? [])
-            ->map(function ($symbol) {
-                return strtoupper(trim((string) $symbol));
-            })
-            ->filter(function ($symbol) {
-                return $symbol !== '';
-            })
-            ->unique()
-            ->values()
-            ->all();
-
-        $updateData = ['updated_at' => now()];
-
-        if ($request->has('name')) {
-            $name = trim((string) ($v['name'] ?? ''));
-            if ($name === '') {
-                return response()->json(['status' => 'error', 'message' => '类别名称不能为空'], 422);
-            }
-
-            $exists = DB::table('asset_categories')->get()->first(function ($item) use ($name, $id) {
-                $rawId = $item->_id ?? ($item->id ?? null);
-                $itemId = '';
-                if (is_object($rawId)) {
-                    if (isset($rawId->{'$oid'})) {
-                        $itemId = (string) $rawId->{'$oid'};
-                    } elseif (method_exists($rawId, '__toString')) {
-                        $itemId = (string) $rawId;
-                    }
-                } elseif ($rawId !== null) {
-                    $itemId = (string) $rawId;
-                }
-
-                return $itemId !== (string) $id
-                    && mb_strtolower(trim((string) ($item->name ?? ''))) === mb_strtolower($name);
-            });
-
-            if ($exists) {
-                return response()->json(['status' => 'error', 'message' => '类别已存在'], 422);
-            }
-
-            $updateData['name'] = $name;
-        }
-
-        if ($request->has('symbols')) {
-            $updateData['symbols'] = $symbols;
-        }
-
-        if ($request->has('target_pct')) {
-            $updateData['target_pct'] = max(0, (float) ($v['target_pct'] ?? 0));
-        }
-
-        if ($request->has('symbol_targets')) {
-            $updateData['symbol_targets'] = is_array($v['symbol_targets'] ?? null) ? $v['symbol_targets'] : [];
-        }
-
-        $updated = DB::table('asset_categories')
-            ->where('_id', $id)
-            ->orWhere('id', $id)
-            ->update($updateData);
-
-        if ($updated === 0) {
-            return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
-        }
-
-        return response()->json(['status' => 'success']);
-    }
-
-    public function deleteAssetCategory($id)
-    {
-        $category = DB::table('asset_categories')->where('_id', $id)->first();
-
-        if (!$category) {
-            return response()->json(['status' => 'error', 'message' => '类别不存在'], 404);
-        }
-
-        DB::table('asset_categories')->where('_id', $id)->delete();
-
-        return response()->json(['status' => 'success']);
-    }
+    // =========================================================================
+    // 1. 核心看板数据 (Dashboard Data)
+    // =========================================================================
 
     public function healthCheck()
     {
@@ -491,53 +287,6 @@ class AssetController extends Controller
             ->all();
     }
 
-    private function resolveBalanceAlertAllocations(array $input): array
-    {
-        $rawAllocations = collect($input['allocations'] ?? []);
-
-        if ($rawAllocations->isEmpty() && !empty($input['category_allocations'])) {
-            $rawAllocations = collect($input['category_allocations']);
-        }
-
-        if ($rawAllocations->isEmpty()) {
-            $rawAllocations = collect($this->getStoredBalanceAlertCategoryAllocations());
-        }
-
-        return $rawAllocations->map(function ($item, $index) {
-            $symbols = collect($item['symbols'] ?? [])
-                ->map(function ($symbol) {
-                    return strtoupper(trim((string) $symbol));
-                })
-                ->filter(function ($symbol) {
-                    return $symbol !== '';
-                })
-                ->unique()
-                ->values()
-                ->all();
-
-            if (empty($symbols)) {
-                $name = trim((string) ($item['name'] ?? ''));
-                if ($name !== '') {
-                    $symbols = [strtoupper($name)];
-                }
-            }
-
-            $firstSymbol = $symbols[0] ?? strtoupper(trim((string) ($item['name'] ?? '')));
-            $fallbackName = count($symbols) === 1 ? $firstSymbol : '组合 ' . ($index + 1);
-
-            return [
-                'id' => trim((string) ($item['id'] ?? '')) ?: 'row-' . ($index + 1),
-                'name' => trim((string) ($item['name'] ?? '')) ?: $fallbackName,
-                'target_pct' => max(0, (float) ($item['target_pct'] ?? 0)),
-                'symbols' => $symbols,
-                'symbol_targets' => collect($item['symbol_targets'] ?? [])->mapWithKeys(function ($v, $k) {
-                    $sym = strtoupper(trim((string) $k));
-                    return [$sym => max(0, (float) $v)];
-                })->all(),
-            ];
-        })->values()->all();
-    }
-
     private function secondsUntilEndOfDay(): int
     {
         $now = Carbon::now('Asia/Kuala_Lumpur');
@@ -559,7 +308,7 @@ class AssetController extends Controller
         // 23:59 自动清空当日触发计数，避免跨日误累计。
         $this->resetHealthCheckTriggerCounterAtDayEndIfNeeded();
 
-        $snapshot = $this->buildBalanceAlertSnapshotPayload($config + [
+        $snapshot = $this->balanceAlertService->getSnapshot($config + [
             'category_allocations' => $this->getStoredBalanceAlertCategoryAllocations(),
         ]);
 
@@ -1490,49 +1239,9 @@ class AssetController extends Controller
     // 4. 资金流水 / P2P 管理 (Capital Flow Management)
     // =========================================================================
 
-    public function getCapitalHistory()
-    {
-        // 🎯 核心修复：手动将 _id 转换为字符串 id，确保前端渲染器能正常工作
-        $history = CapitalFlow::orderBy('transaction_date', 'desc')
-            ->get()
-            ->map(function ($item) {
-                $item->id = (string) $item->_id;
-                return $item;
-            });
-
-        return response()->json($history);
-    }
-
-    public function storeCapitalRecord(Request $request)
-    {
-        $v = $request->validate([
-            'asset_id' => 'required',
-            'type' => 'required|in:DEPOSIT,WITHDRAWAL',
-            'fiat_amount' => 'required|numeric',
-            'usdt_rate' => 'required|numeric',
-            'fiat_currency' => 'required|string',
-            'transaction_date' => 'required|date'
-        ]);
-
-        $usdtAmount = $v['fiat_amount'] / $v['usdt_rate'];
-        $flow = CapitalFlow::create(array_merge($v, ['usdt_amount' => $usdtAmount]));
-
-        // 精准更新选中的资产余额
-        $asset = Asset::find($v['asset_id']);
-        if ($asset) {
-            $v['type'] === 'DEPOSIT' ? $asset->token_amount += $usdtAmount : $asset->token_amount -= $usdtAmount;
-            $asset->save();
-        }
-
-        return response()->json(['status' => 'success', 'new_balance' => $asset ? $asset->token_amount : null]);
-    }
-
-    public function deleteCapitalRecord($id)
-    {
-        // 合并后的单条删除逻辑
-        CapitalFlow::destroy($id);
-        return response()->json(['status' => 'success', 'message' => '记录已移除']);
-    }
+    // =========================================================================
+    // 5. 钱包与代币管理 (Wallets & Tracked Tokens)
+    // =========================================================================
 
     // =========================================================================
     // 5. 钱包与代币管理 (Wallets & Tracked Tokens)
@@ -1705,80 +1414,12 @@ class AssetController extends Controller
             'category_allocations.*.symbols.*' => 'string|max:30',
         ]);
 
-        return response()->json($this->getCachedBalanceAlertSnapshotPayload($v));
-    }
-
-    private function getCachedBalanceAlertSnapshotPayload(array $input): array
-    {
-        $normalized = $this->normalizeSnapshotCacheInput($input);
-        $normalized['_allocations_fingerprint'] = $this->getBalanceAlertAllocationsFingerprint();
-        $hash = md5(json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $cacheKey = 'balance_alert:snapshot:' . $hash;
-
-        return Cache::remember($cacheKey, 300, function () use ($input) {
-            return $this->buildBalanceAlertSnapshotPayload($input);
-        });
-    }
-
-    private function getBalanceAlertAllocationsFingerprint(): string
-    {
-        $categoryRows = DB::table('asset_categories')->get();
-        $manualAssetRows = DB::table('assets')->get();
-        $cexAssetRows = DB::table('cex_synced_assets')->get();
-        $hideLowValueAssets = $this->shouldHideLowValueAssets() ? '1' : '0';
-
-        $count = $categoryRows->count();
-        $lastUpdated = $categoryRows->map(function ($row) {
-            $updated = $row->updated_at ?? $row->created_at ?? null;
-            return $updated ? (string) $updated : '';
-        })->filter()->sort()->last();
-
-        $manualFingerprint = $manualAssetRows->count() . ':' . (
-            $manualAssetRows->map(function ($row) {
-                $updated = $row->updated_at ?? $row->created_at ?? null;
-                return $updated ? (string) $updated : '';
-            })->filter()->sort()->last() ?? 'none'
-        );
-
-        $cexFingerprint = $cexAssetRows->count() . ':' . (
-            $cexAssetRows->map(function ($row) {
-                $updated = $row->last_synced_at ?? $row->updated_at ?? $row->created_at ?? null;
-                return $updated ? (string) $updated : '';
-            })->filter()->sort()->last() ?? 'none'
-        );
-
-        return $count . ':' . ($lastUpdated ?? 'none') . '|m:' . $manualFingerprint . '|c:' . $cexFingerprint . '|h:' . $hideLowValueAssets;
-    }
-
-    private function normalizeSnapshotCacheInput($value)
-    {
-        if (is_array($value)) {
-            $isAssoc = array_keys($value) !== range(0, count($value) - 1);
-            if ($isAssoc) {
-                ksort($value);
-                $normalized = [];
-                foreach ($value as $key => $item) {
-                    $normalized[$key] = $this->normalizeSnapshotCacheInput($item);
-                }
-
-                return $normalized;
-            }
-
-            return array_map(function ($item) {
-                return $this->normalizeSnapshotCacheInput($item);
-            }, $value);
-        }
-
-        if (is_float($value)) {
-            return (float) number_format($value, 8, '.', '');
-        }
-
-        return $value;
+        return response()->json($this->balanceAlertService->getSnapshot($v));
     }
 
     /**
      * Generate a PNG image of the balance alert table via Python + Pillow
-     * and send it to the provided Discord webhook as an attachment.
+     * and send it to the provided Discord webhook as an attachment (async via queue).
      */
     public function sendBalanceAlertImage(Request $request)
     {
@@ -1789,408 +1430,22 @@ class AssetController extends Controller
             'force_threshold' => 'nullable|numeric|min:0|max:100',
         ]);
 
-        $snapshot = $this->buildBalanceAlertSnapshotPayload($v);
-        $tmpDir = sys_get_temp_dir();
-        $jsonPath = tempnam($tmpDir, 'bal_alert_') . '.json';
-        $pngPath = tempnam($tmpDir, 'bal_alert_') . '.png';
+        $snapshot = $this->balanceAlertService->getSnapshot($v);
 
-        file_put_contents($jsonPath, json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // Dispatch to queue for async processing
+        GenerateBalanceAlertImage::dispatch($snapshot, $v['webhook_url'])
+            ->onQueue('alerts');
 
-        $pythonScript = base_path('tools/render_balance_alert_table.py');
-        if (!file_exists($pythonScript)) {
-            @unlink($jsonPath);
-            @unlink($pngPath);
-            return response()->json(['status' => 'error', 'message' => 'Render script missing: ' . $pythonScript], 500);
-        }
-
-        $pythonBin = $this->resolvePythonBinary();
-        $processOutput = '';
-
-        try {
-            if (class_exists('\Symfony\\Component\\Process\\Process')) {
-                $process = new \Symfony\Component\Process\Process([$pythonBin, $pythonScript, $jsonPath, $pngPath]);
-                $process->setTimeout(30);
-                $process->run();
-                $processOutput = $process->getOutput() . $process->getErrorOutput();
-                if (!$process->isSuccessful()) {
-                    throw new \RuntimeException('Image renderer failed: ' . $processOutput);
-                }
-            } else {
-                $cmd = '"' . str_replace('"', '\\"', $pythonBin) . '" ' . escapeshellarg($pythonScript) . ' ' . escapeshellarg($jsonPath) . ' ' . escapeshellarg($pngPath) . ' 2>&1';
-                $processOutput = shell_exec($cmd);
-                if (!file_exists($pngPath) || filesize($pngPath) === 0) {
-                    throw new \RuntimeException('Image renderer failed (shell): ' . $processOutput);
-                }
-            }
-        } catch (\Throwable $e) {
-            @unlink($jsonPath);
-            @unlink($pngPath);
-            return response()->json(['status' => 'error', 'message' => 'Failed to render image: ' . $e->getMessage(), 'output' => $processOutput], 500);
-        }
-
-        if (!file_exists($pngPath) || filesize($pngPath) === 0) {
-            @unlink($jsonPath);
-            @unlink($pngPath);
-            return response()->json(['status' => 'error', 'message' => 'Generated PNG missing or empty', 'output' => $processOutput], 500);
-        }
-
-        $levelMap = [
-            'force' => '强制平衡',
-            'rebalance' => '执行平衡',
-            'prepare' => '准备资金',
-            'none' => '无需提醒',
-        ];
-        $level = (string) ($snapshot['level'] ?? 'none');
-        $levelText = $levelMap[$level] ?? $level;
-        $windowText = (bool) data_get($snapshot, 'window.in_rebalance_window', false) ? '在平衡窗口' : '未在平衡窗口';
-        $date = substr((string) ($snapshot['now'] ?? now()->toDateTimeString()), 0, 10);
-        $maxDev = number_format((float) ($snapshot['portfolio']['max_deviation_pct'] ?? 0), 2);
-        $content = implode("\n", [
-            '【资产平衡提醒】',
-            '等级: ' . $levelText,
-            '平衡时机: ' . $windowText,
-            '日期: ' . $date,
-            '最大偏离: ' . $maxDev . '%',
-            '',
-            '偏离明细:',
-        ]);
-
-        // Send to Discord webhook as attachment
-        try {
-            $res = \Illuminate\Support\Facades\Http::attach('file', file_get_contents($pngPath), 'balance_alert.png')
-                ->post($v['webhook_url'], ['content' => $content]);
-
-            if (!$res->successful()) {
-                throw new \RuntimeException('Webhook returned ' . $res->status() . ': ' . $res->body());
-            }
-        } catch (\Throwable $e) {
-            @unlink($jsonPath);
-            @unlink($pngPath);
-            return response()->json(['status' => 'error', 'message' => 'Failed to send webhook: ' . $e->getMessage()], 500);
-        }
-
-        @unlink($jsonPath);
-        @unlink($pngPath);
-
-        return response()->json(['status' => 'success', 'message' => '图片已发送']);
-    }
-
-    private function resolvePythonBinary(): string
-    {
-        $envPython = trim((string) env('PYTHON_BIN', ''));
-        if ($envPython !== '' && file_exists($envPython)) {
-            return $envPython;
-        }
-
-        $candidates = [
-            base_path('.venv/Scripts/python.exe'),
-            'C:\\Users\\hosha\\Desktop\\crypto-tracker\\.venv\\Scripts\\python.exe',
-            'C:\\Python312\\python.exe',
-            'C:\\Program Files\\Python312\\python.exe',
-            'C:\\Program Files\\Python311\\python.exe',
-        ];
-
-        foreach ($candidates as $candidate) {
-            if (file_exists($candidate)) {
-                return $candidate;
-            }
-        }
-
-        $whereOutput = @shell_exec('where.exe python 2>NUL');
-        if (is_string($whereOutput) && trim($whereOutput) !== '') {
-            $lines = preg_split('/\r\n|\r|\n/', trim($whereOutput));
-            foreach ($lines as $line) {
-                $line = trim($line);
-                if ($line !== '' && file_exists($line)) {
-                    return $line;
-                }
-            }
-        }
-
-        return 'python';
-    }
-
-    private function buildBalanceAlertSnapshotPayload(array $input): array
-    {
-        $prepareThreshold = (float) ($input['prepare_threshold'] ?? 3.0);
-        $rebalanceThreshold = (float) ($input['rebalance_threshold'] ?? 5.0);
-        $forceThreshold = (float) ($input['force_threshold'] ?? 7.5);
-        $manualAssets = Asset::all();
-        $autoAssets = CexSyncedAsset::query()->where('is_active', true)->get();
-        $assets = $manualAssets->concat($autoAssets);
-        if ($this->shouldHideLowValueAssets()) {
-            $assets = $assets->filter(function ($asset) {
-                return (float) ($asset->value_usd ?? 0) >= self::LOW_VALUE_ASSET_FILTER_THRESHOLD_USD;
-            })->values();
-        }
-
-        $trackedTokens = DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
-
-        $normalizedAssets = $assets->map(function ($asset) use ($trackedTokens) {
-            $tokenInfo = $trackedTokens->get($asset->coingecko_id);
-            $symbol = strtoupper((string) ($asset->symbol ?? ($tokenInfo->symbol ?? $asset->token_name ?? 'UNKNOWN')));
-            $symbol = trim($symbol) !== '' ? trim($symbol) : 'UNKNOWN';
-
-            return [
-                'symbol' => $symbol,
-                'value' => is_numeric($asset->value_usd) ? (float) $asset->value_usd : 0,
-            ];
-        });
-
-        $totalValue = $normalizedAssets->sum('value');
-
-        $knownSymbols = $normalizedAssets->groupBy('symbol')->keys()->values();
-
-        $tokenValueMap = $normalizedAssets->groupBy('symbol')->map(function ($items) {
-            return (float) $items->sum('value');
-        });
-
-        $allocations = collect($this->resolveBalanceAlertAllocations($input));
-
-        // collect symbol-level target inputs from request (optional)
-        $symbolTargets = collect($input['target_allocations'] ?? [])->mapWithKeys(function ($row) {
-            $sym = strtoupper(trim((string) ($row['symbol'] ?? '')));
-            return [$sym => max(0, (float) ($row['target_pct'] ?? 0))];
-        });
-
-        // Expand allocations: if a category has multiple symbols and symbol-level targets are provided,
-        // split the category into per-symbol rows using relative weights inside the category.
-        $expanded = [];
-        foreach ($allocations as $item) {
-            $symbols = collect($item['symbols'] ?? [])->unique()->values();
-            $categoryTargetInput = max(0, (float) ($item['target_pct'] ?? 0));
-
-            // merge DB-stored symbol_targets (if any) with request-level overrides (request wins)
-            $dbSymbolTargets = collect($item['symbol_targets'] ?? [])->mapWithKeys(function ($v, $k) {
-                $sym = strtoupper(trim((string) $k));
-                return [$sym => max(0, (float) $v)];
-            });
-
-            $combinedSymbolTargets = $dbSymbolTargets->merge($symbolTargets);
-
-            // sum of symbol-level targets for symbols inside this category
-            $sumInCategory = $symbols->sum(function ($s) use ($combinedSymbolTargets) {
-                return (float) ($combinedSymbolTargets->get($s, 0));
-            });
-
-            if ($symbols->count() > 1 && $sumInCategory > 0) {
-                foreach ($symbols as $symbol) {
-                    $symbolValue = (float) ($tokenValueMap->get($symbol, 0));
-                    $weight = $totalValue > 0 ? ($symbolValue / $totalValue) * 100 : 0;
-                    $relative = $combinedSymbolTargets->get($symbol, 0) / $sumInCategory;
-                    $symbolTargetInput = $categoryTargetInput * $relative;
-
-                    $expanded[] = [
-                        'id' => (string) $item['id'] . '|' . $symbol,
-                        'name' => (string) $symbol,
-                        'value' => round($symbolValue, 2),
-                        'current_value' => $symbolValue,
-                        'weight_pct' => round($weight, 2),
-                        'target_pct_input' => (float) $symbolTargetInput,
-                        'symbols' => [$symbol],
-                    ];
-                }
-            } else {
-                $allocationValue = $symbols->sum(function ($symbol) use ($tokenValueMap) {
-                    return (float) ($tokenValueMap->get($symbol, 0));
-                });
-
-                $weight = $totalValue > 0 ? ($allocationValue / $totalValue) * 100 : 0;
-
-                $expanded[] = [
-                    'id' => (string) $item['id'],
-                    'name' => (string) $item['name'],
-                    'value' => round($allocationValue, 2),
-                    'current_value' => (float) $allocationValue,
-                    'weight_pct' => round($weight, 2),
-                    'target_pct_input' => max(0, (float) ($item['target_pct'] ?? 0)),
-                    'symbols' => $symbols->all(),
-                ];
-            }
-        }
-
-        $allocationRows = collect($expanded)->values();
-        $allocationSourceMap = $allocations->keyBy(function ($item) {
-            return (string) ($item['id'] ?? '');
-        });
-
-        $inputTargetTotal = (float) $allocationRows->sum('target_pct_input');
-        $hasTargets = $allocationRows->isNotEmpty() && $inputTargetTotal > 0;
-        $defaultTargetPct = $allocationRows->count() > 0 ? (100 / $allocationRows->count()) : 0;
-
-        $normalizedAllocations = $allocationRows->map(function ($row) use ($hasTargets, $inputTargetTotal, $defaultTargetPct) {
-            $target = $hasTargets ? (($row['target_pct_input'] / $inputTargetTotal) * 100) : $defaultTargetPct;
-
-            return [
-                'id' => $row['id'],
-                'name' => $row['name'],
-                'current_value' => (float) $row['current_value'],
-                'target_pct' => (float) $target,
-                'symbols' => $row['symbols'],
-            ];
-        })->values()->all();
-
-        $rebalanceResult = app(RebalanceService::class)->calculateProportional($normalizedAllocations, (float) $totalValue, $rebalanceThreshold);
-        $flatItems = collect($rebalanceResult['items'] ?? [])->values();
-
-        $groupedItems = $flatItems
-            ->groupBy(function ($item) {
-                $id = (string) ($item['id'] ?? '');
-                return str_contains($id, '|') ? explode('|', $id, 2)[0] : $id;
-            })
-            ->map(function ($groupItems, $groupId) use ($allocationSourceMap) {
-                $groupItems = collect($groupItems)->values();
-                $source = $allocationSourceMap->get($groupId, []);
-                $children = $groupItems->map(function ($item) use ($groupId) {
-                    $child = $item;
-                    $child['group_id'] = $groupId;
-                    $child['is_child'] = true;
-                    return $child;
-                })->sortByDesc('abs_deviation_pct')->values()->all();
-
-                // Use explicit float-safe summation to avoid collection sum quirks with string values
-                $rows = $groupItems->all();
-                $currentValue = array_sum(array_map(function ($r) { return (float) ($r['current_value'] ?? 0); }, $rows));
-                $targetValue = array_sum(array_map(function ($r) { return (float) ($r['new_target_value'] ?? 0); }, $rows));
-                $currentPct = array_sum(array_map(function ($r) { return (float) ($r['current_pct'] ?? 0); }, $rows));
-                $targetPct = array_sum(array_map(function ($r) { return (float) ($r['target_pct'] ?? 0); }, $rows));
-                $rebalancedTargetPct = array_sum(array_map(function ($r) { return (float) ($r['new_target_pct'] ?? 0); }, $rows));
-                // Deviation should be computed against the configured target, not the threshold-adjusted target
-                $deviationPct = $targetPct - $currentPct;
-                $adviceUsd = array_sum(array_map(function ($r) { return (float) ($r['advice_usd'] ?? 0); }, $rows));
-                $absDeviation = abs($deviationPct);
-
-                $parent = [
-                    'id' => $groupId,
-                    'name' => (string) ($source['name'] ?? ($groupItems->first()['name'] ?? $groupId)),
-                    'value' => round($currentValue, 2),
-                    'current_value' => (float) $currentValue,
-                    'current_pct' => (float) $currentPct,
-                    'weight_pct' => (float) $currentPct,
-                    'target_pct' => (float) $targetPct,
-                    'new_target_pct' => (float) $rebalancedTargetPct,
-                    'new_target_value' => (float) $targetValue,
-                    'deviation_pct' => (float) $deviationPct,
-                    'abs_deviation_pct' => (float) $absDeviation,
-                    'advice_usd' => (float) $adviceUsd,
-                    'advice_action' => $adviceUsd > 0 ? 'buy' : ($adviceUsd < 0 ? 'sell' : 'hold'),
-                    'is_active' => true,
-                    'symbols' => array_values(array_unique((array) ($source['symbols'] ?? []))),
-                    'children' => $children,
-                ];
-
-                // Remove empty children key to avoid frontend showing toggles
-                if (empty($children)) {
-                    unset($parent['children']);
-                }
-
-                // Log parent aggregation for debugging
-
-                // Log parent aggregation for debugging
-                try {
-                    \Illuminate\Support\Facades\Log::info('balance-alert: parent-agg', ['group' => $groupId, 'current_pct' => $currentPct, 'target_pct' => $targetPct, 'deviation_pct' => $deviationPct, 'advice_usd' => $adviceUsd]);
-                } catch (\Throwable $e) {
-                    // ignore
-                }
-
-                return $parent;
-            })
-            ->sortByDesc('abs_deviation_pct')
-            ->values();
-
-        $items = $groupedItems;
-        // DEBUG: dump flat and grouped items to log (INFO level so it appears in default logs)
-        try {
-            \Illuminate\Support\Facades\Log::info('balance-alert: flat items', ['flat_items' => $flatItems->toArray()]);
-            \Illuminate\Support\Facades\Log::info('balance-alert: grouped items', ['items' => $items->toArray()]);
-        } catch (\Throwable $e) {
-            // ignore logging errors
-        }
-        // Trigger alerts from parent-group deviation so children only affect the sell/buy breakdown.
-        $maxDeviation = (float) ($items->isEmpty()
-            ? ($rebalanceResult['max_deviation_pct'] ?? 0)
-            : (float) $items->max(function ($item) {
-                return (float) ($item['abs_deviation_pct'] ?? 0);
-            }));
-        $normalizedTargetTotal = (float) ($rebalanceResult['normalized_total_pct'] ?? 0);
-        $now = Carbon::now('Asia/Kuala_Lumpur');
-        $isLateMonth = $now->day >= 21;
-        $isQuarterRebalanceMonth = in_array($now->month, [1, 4, 7, 10], true);
-        $inRebalanceWindow = $isLateMonth && $isQuarterRebalanceMonth;
-
-        $level = 'none';
-        $message = '当前偏离在安全范围内。';
-
-        if ($maxDeviation >= $forceThreshold) {
-            $level = 'force';
-            $message = '偏离超过强制阈值，建议立即强制平衡。';
-        } elseif ($maxDeviation >= $rebalanceThreshold && $inRebalanceWindow) {
-            $level = 'rebalance';
-            $message = '偏离超过平衡阈值且处于季度下旬窗口，建议执行平衡。';
-        } elseif ($maxDeviation >= $prepareThreshold) {
-            $level = 'prepare';
-            $message = '偏离超过准备阈值，建议提前准备资金。';
-        }
-
-        return [
-            'status' => 'success',
-            'now' => $now->toDateTimeString(),
-            'items' => $items,
-            'known_symbols' => $knownSymbols,
-            'window' => [
-                'is_late_month' => $isLateMonth,
-                'is_quarter_rebalance_month' => $isQuarterRebalanceMonth,
-                'in_rebalance_window' => $inRebalanceWindow,
-                'rule' => '每年 1/4/7/10 月下旬（21 号至月末）',
-            ],
-            'thresholds' => [
-                'prepare_threshold' => $prepareThreshold,
-                'rebalance_threshold' => $rebalanceThreshold,
-                'force_threshold' => $forceThreshold,
-            ],
-            'portfolio' => [
-                'total_value' => round((float) $totalValue, 2),
-                'allocation_count' => $allocationRows->count(),
-                'default_target_pct' => round($defaultTargetPct, 2),
-                'max_deviation_pct' => round($maxDeviation, 2),
-                'target_input_total_pct' => round($inputTargetTotal, 2),
-                'target_normalized_total_pct' => round($normalizedTargetTotal, 2),
-            ],
-            'advice' => [
-                'threshold_pct' => $rebalanceThreshold,
-                'k_factor' => (float) ($rebalanceResult['k_factor'] ?? 1.0),
-                'normalized_total_pct' => (float) $normalizedTargetTotal,
-                'max_deviation_pct' => $maxDeviation,
-                'summary' => $rebalanceResult['summary'] ?? [
-                    'buy_usd' => 0,
-                    'sell_usd' => 0,
-                    'net_usd' => 0,
-                    'text' => '无需调仓',
-                ],
-            ],
-            'level' => $level,
-            'message' => $message,
-            'allocations' => $allocationRows->map(function ($row) {
-                return [
-                    'id' => $row['id'],
-                    'name' => $row['name'],
-                    'target_pct' => $row['target_pct_input'],
-                    'symbols' => $row['symbols'],
-                ];
-            })->values(),
-        ];
+        return response()->json(['status' => 'success', 'message' => '图片生成任务已排队，稍后发送']);
     }
 
     // =========================================================================
     // 7. 系统维护 (System Maintenance)
     // =========================================================================
 
-    public function clearCapitalFlows()
-    {
-        CapitalFlow::truncate();
-        return response()->json(['status' => 'success']);
-    }
-
+    // =========================================================================
+    // 7. 系统维护 (System Maintenance)
+    // =========================================================================
     public function clearSnapshots()
     {
         DB::table('asset_snapshots')->delete();
