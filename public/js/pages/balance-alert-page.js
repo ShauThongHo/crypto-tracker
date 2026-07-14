@@ -9,7 +9,7 @@ class BalanceAlertPage {
         this.draggingSymbol = null;
         this.autoRefreshTimer = null;
         this.preferredCurrency = 'USD';
-        this.exchangeRate = 4.2;
+        this.exchangeRate = 4.72; // fallback — updated by initCurrencyPreference()
         this.currentTotalValueUsd = 0;
         this.categoryApiBase = '/api/asset-categories';
         this.settingsApiBase = '/api/balance-alert/settings';
@@ -121,8 +121,9 @@ class BalanceAlertPage {
             clearInterval(this.refreshTimer);
         }
 
-        // Keep aligned with dashboard asset refresh frequency (5 minutes).
-        this.refreshTimer = setInterval(() => {
+        // Refresh snapshot + exchange rate every 5 minutes
+        this.refreshTimer = setInterval(async () => {
+            await this.initCurrencyPreference();
             this.checkSnapshot();
         }, 300000);
     }
@@ -167,6 +168,8 @@ class BalanceAlertPage {
         this.addAllocationBtn = document.getElementById('addAllocationBtn');
         this.tokenPool = document.getElementById('tokenPool');
         this.allocationList = document.getElementById('allocationList');
+        this.manualSymbolInput = document.getElementById('manualSymbolInput');
+        this.manualSymbolAddBtn = document.getElementById('manualSymbolAddBtn');
         this.helperText = document.getElementById('helperText');
         this.symbolTargetsModal = document.getElementById('symbolTargetsModal');
         this.symbolTargetsList = document.getElementById('symbolTargetsList');
@@ -207,6 +210,17 @@ class BalanceAlertPage {
         this.equalizeBtn.addEventListener('click', () => this.applyEqualTargets());
         this.syncWeightBtn.addEventListener('click', () => this.applyCurrentWeightsAsTargets());
         this.addAllocationBtn.addEventListener('click', () => this.addAllocation());
+        if (this.manualSymbolAddBtn) {
+            this.manualSymbolAddBtn.addEventListener('click', () => this.addManualSymbol());
+        }
+        if (this.manualSymbolInput) {
+            this.manualSymbolInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.addManualSymbol();
+                }
+            });
+        }
         if (this.toggleDetailsBtn && this.detailsSection) {
             this.toggleDetailsBtn.addEventListener('click', () => this.toggleDetails());
         }
@@ -317,7 +331,8 @@ class BalanceAlertPage {
                 this.exchangeRate = Number(data.rate);
             }
         } catch (error) {
-            this.exchangeRate = 4.2;
+            console.warn('Exchange rate fetch failed, using fallback 4.72', error);
+            this.exchangeRate = 4.72;
         } finally {
             if (this.snapshot) {
                 this.renderSnapshot(this.snapshot);
@@ -859,6 +874,26 @@ class BalanceAlertPage {
             allocation.symbols.forEach((symbol) => known.delete(symbol));
         });
         return [...known];
+    }
+
+    addManualSymbol() {
+        if (!this.manualSymbolInput) return;
+        const symbol = String(this.manualSymbolInput.value || '').toUpperCase().trim();
+        if (!symbol) return;
+
+        // Add to known_symbols if not present
+        if (this.snapshot && Array.isArray(this.snapshot.known_symbols)) {
+            if (!this.snapshot.known_symbols.includes(symbol)) {
+                this.snapshot.known_symbols.push(symbol);
+            }
+        } else {
+            this.snapshot = this.snapshot || {};
+            this.snapshot.known_symbols = [symbol];
+        }
+
+        this.manualSymbolInput.value = '';
+        this.renderAllocationList();
+        this.setStatus('success', `已添加 ${symbol}`);
     }
 
     renderAllocationList() {

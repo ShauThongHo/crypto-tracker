@@ -37,6 +37,10 @@
         @yield('content')
     </main>
 
-    <script src="{{ asset('dashboard.js') }}?v={{ @filemtime(public_path('dashboard.js')) }}"></script>
+    <script src="{{ asset('js/dashboard/globals.js') }}?v={{ @filemtime(public_path('js/dashboard/globals.js')) }}"></script>
+    <script src="{{ asset('js/dashboard/formatting.js') }}?v={{ @filemtime(public_path('js/dashboard/formatting.js')) }}"></script>
+    <script src="{{ asset('js/dashboard/services.js') }}?v={{ @filemtime(public_path('js/dashboard/services.js')) }}"></script>
+    <script src="{{ asset('js/dashboard/renderers.js') }}?v={{ @filemtime(public_path('js/dashboard/renderers.js')) }}"></script>
+    <script src="{{ asset('js/dashboard/interactions.js') }}?v={{ @filemtime(public_path('js/dashboard/interactions.js')) }}"></script>
 </body>
 </html>

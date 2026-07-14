@@ -45,7 +45,6 @@ class BalanceAlertService
 
         // 1. Load all assets (cached per user/account)
         $assets = $this->loadAssetsSnapshot();
-        $totalValue = $assets->sum('value');
 
         // 2. Load price map for all unique coingecko_ids (cached per token)
         $priceMap = $this->loadPriceMap($assets);
@@ -53,21 +52,29 @@ class BalanceAlertService
         // 3. Merge prices into assets
         $assetsWithPrices = $this->applyPrices($assets, $priceMap);
 
-        // 4. Build allocations from categories + input overrides
+        // 3b. Resolve canonical symbols (USDT ↔ Tether treated as same coin)
+        //     Assets sharing the same coingecko_id get the same canonical symbol
+        $assetsWithPrices = $this->resolveCanonicalSymbols($assetsWithPrices);
+
+        // 4. Compute total value from priced assets
+        $totalValue = $assetsWithPrices->sum('value_usd');
+
+        // 5. Build allocations from categories + input overrides
         $allocations = $this->buildAllocations($input, $assetsWithPrices, $totalValue);
 
-        // 5. Run rebalance calculation
-        $rebalanceResult = $this->rebalanceService->calculateProportional(
-            $allocations,
-            $totalValue,
-            $rebalanceThreshold
-        );
+        // 5b. Visible total = sum of allocation values (excludes unallocated residual)
+        //     So portfolio.total_value matches sum of items on screen.
+        $visibleTotal = (float) collect($allocations)->sum('current_value');
 
-        // 6. Build grouped items for response
+        // 6. Run rebalance — only active allocations (deviation ≥ threshold) participate
+        //     Use visibleTotal for denominator so current_pct add up to 100%
+        $rebalanceResult = $this->rebalanceActiveOnly($allocations, $visibleTotal, $rebalanceThreshold);
+
+        // 7. Build grouped items for response
         $items = $this->buildGroupedItems($rebalanceResult, $input);
         $maxDeviation = $this->calculateMaxDeviation($items, $rebalanceResult);
 
-        // 7. Determine alert level
+        // 8. Determine alert level
         $now = Carbon::now('Asia/Kuala_Lumpur');
         $isLateMonth = $now->day >= 21;
         $isQuarterRebalanceMonth = in_array($now->month, [1, 4, 7, 10], true);
@@ -104,7 +111,7 @@ class BalanceAlertService
                 'force_threshold' => $forceThreshold,
             ],
             'portfolio' => [
-                'total_value' => round($totalValue, 2),
+                'total_value' => round($visibleTotal, 2),
                 'allocation_count' => count($allocations),
                 'default_target_pct' => count($allocations) > 0 ? round(100 / count($allocations), 2) : 0,
                 'max_deviation_pct' => round($maxDeviation, 2),
@@ -130,6 +137,160 @@ class BalanceAlertService
     }
 
     /**
+     * Rebalance: only active allocations (|deviation| ≥ threshold) participate.
+     * Transfer excess from overs to deficit of unders equally → buy = sell.
+     * Inactive allocations (|deviation| < threshold) are left untouched.
+     */
+    private function rebalanceActiveOnly(array $allocations, float $totalValue, float $threshold): array
+    {
+        $hundred = '100';
+        $portfolio = $this->rebalanceService->normalizeNumber($totalValue);
+        $items = [];
+        $overs = [];  // need to sell
+        $unders = [];  // need to buy
+
+        foreach ($allocations as $i => $alloc) {
+            $currentValue = $this->rebalanceService->normalizeNumber($alloc['current_value'] ?? 0);
+            $targetPct = $this->rebalanceService->normalizeNumber($alloc['target_pct'] ?? 0);
+            $currentPct = $this->rebalanceService->compare($portfolio, '0') > 0
+                ? $this->rebalanceService->divide(
+                    $this->rebalanceService->multiply($currentValue, $hundred),
+                    $portfolio
+                  )
+                : '0';
+            $deviationPct = $this->rebalanceService->subtract($targetPct, $currentPct);
+            $absDev = $this->rebalanceService->abs($deviationPct);
+            $thresholdStr = $this->rebalanceService->normalizeNumber($threshold);
+            $isActive = $this->rebalanceService->compare($absDev, $thresholdStr) >= 0;
+
+            $targetValue = $this->rebalanceService->compare($portfolio, '0') > 0
+                ? $this->rebalanceService->divide(
+                    $this->rebalanceService->multiply($portfolio, $targetPct),
+                    $hundred
+                  )
+                : '0';
+            $adviceUsd = $this->rebalanceService->subtract($targetValue, $currentValue);
+
+            $items[$i] = [
+                'id' => (string) ($alloc['id'] ?? $i),
+                'name' => (string) ($alloc['name'] ?? $alloc['id'] ?? $i),
+                'symbols' => $alloc['symbols'] ?? [],
+                'current_value' => $currentValue,
+                'current_pct' => $currentPct,
+                'target_pct' => $targetPct,
+                'deviation_pct' => $deviationPct,
+                'is_active' => $isActive,
+                'advice_usd_initial' => $adviceUsd,
+                'target_value' => $targetValue,
+            ];
+
+            if ($isActive) {
+                if ($this->rebalanceService->compare($adviceUsd, '0') > 0) {
+                    $unders[] = $i;
+                } elseif ($this->rebalanceService->compare($adviceUsd, '0') < 0) {
+                    $overs[] = $i;
+                }
+            }
+        }
+
+        // Total excess from overs, total deficit from unders
+        $totalExcess = '0';
+        foreach ($overs as $i) {
+            $excess = $this->rebalanceService->abs($items[$i]['advice_usd_initial']);
+            $totalExcess = $this->rebalanceService->add($totalExcess, $excess);
+        }
+
+        $totalDeficit = '0';
+        foreach ($unders as $i) {
+            $deficit = $items[$i]['advice_usd_initial'];
+            $totalDeficit = $this->rebalanceService->add($totalDeficit, $deficit);
+        }
+
+        // Transfer = min(excess, deficit) → buy = sell
+        $transferAmount = $this->rebalanceService->compare($totalExcess, $totalDeficit) < 0
+            ? $totalExcess
+            : $totalDeficit;
+
+        if ($this->rebalanceService->compare($totalExcess, '0') > 0) {
+            foreach ($overs as $i) {
+                $excess = $this->rebalanceService->abs($items[$i]['advice_usd_initial']);
+                $ratio = $this->rebalanceService->divide($excess, $totalExcess);
+                $sellAmt = $this->rebalanceService->multiply($ratio, $transferAmount);
+                // Negate: sell is negative advice_usd
+                $sellAmt = $this->rebalanceService->subtract('0', $sellAmt);
+                $items[$i]['advice_usd'] = $sellAmt;
+                $items[$i]['advice_action'] = 'sell';
+            }
+        }
+        if ($this->rebalanceService->compare($totalDeficit, '0') > 0) {
+            foreach ($unders as $i) {
+                $deficit = $items[$i]['advice_usd_initial'];
+                $ratio = $this->rebalanceService->divide($deficit, $totalDeficit);
+                $buyAmt = $this->rebalanceService->multiply($ratio, $transferAmount);
+                $items[$i]['advice_usd'] = $buyAmt;
+                $items[$i]['advice_action'] = 'buy';
+            }
+        }
+
+        // Collate advice totals
+        $totalBuy = '0';
+        $totalSell = '0';
+        $maxDeviation = '0';
+        $finalItems = [];
+        foreach ($items as $item) {
+            $adviceFinal = $item['advice_usd'] ?? '0';
+            $absDev = $this->rebalanceService->abs($item['deviation_pct']);
+            if ($this->rebalanceService->compare($absDev, $maxDeviation) > 0) {
+                $maxDeviation = $absDev;
+            }
+            if ($this->rebalanceService->compare($adviceFinal, '0') > 0) {
+                $totalBuy = $this->rebalanceService->add($totalBuy, $adviceFinal);
+            } elseif ($this->rebalanceService->compare($adviceFinal, '0') < 0) {
+                $totalSell = $this->rebalanceService->add($totalSell, $this->rebalanceService->abs($adviceFinal));
+            }
+            $finalItems[] = [
+                'id' => $item['id'],
+                'name' => $item['name'],
+                'symbols' => $item['symbols'],
+                'current_value' => $this->rebalanceService->toFloatOutput($item['current_value']),
+                'current_pct' => $this->rebalanceService->toFloatOutput($item['current_pct']),
+                'weight_pct' => $this->rebalanceService->toFloatOutput($item['current_pct']),
+                'target_pct' => $this->rebalanceService->toFloatOutput($item['target_pct']),
+                'new_target_pct' => $this->rebalanceService->toFloatOutput($item['target_pct']),
+                'new_target_value' => $this->rebalanceService->toFloatOutput($item['target_value']),
+                'deviation_pct' => $this->rebalanceService->toFloatOutput($item['deviation_pct']),
+                'abs_deviation_pct' => $this->rebalanceService->toFloatOutput($absDev),
+                'advice_usd' => $this->rebalanceService->toFloatOutput($adviceFinal),
+                'advice_action' => $item['advice_action'] ?? 'hold',
+                'is_active' => (bool) ($item['is_active'] ?? false),
+            ];
+        }
+
+        $totalBuyFloat = $this->rebalanceService->toFloatOutput($totalBuy);
+        $totalSellFloat = $this->rebalanceService->toFloatOutput($totalSell);
+
+        return [
+            'k_factor' => 1.0,
+            'inactive_threshold_pct' => (float) $threshold,
+            'normalized_total_pct' => 0.0,
+            'max_deviation_pct' => $this->rebalanceService->toFloatOutput($maxDeviation),
+            'items' => $finalItems,
+            'summary' => [
+                'buy_usd' => round($totalBuyFloat, 8),
+                'sell_usd' => round($totalSellFloat, 8),
+                'net_usd' => round($totalBuyFloat - $totalSellFloat, 8),
+                'text' => $totalBuyFloat > 0 && $totalSellFloat > 0
+                    ? sprintf('买入 $%s / 卖出 $%s',
+                        number_format($totalBuyFloat, 2, '.', ','),
+                        number_format($totalSellFloat, 2, '.', ','))
+                    : ($totalBuyFloat > 0 ? sprintf('买入 $%s', number_format($totalBuyFloat, 2, '.', ','))
+                        : ($totalSellFloat > 0 ? sprintf('卖出 $%s', number_format($totalSellFloat, 2, '.', ','))
+                            : '无需调仓')),
+            ],
+        ];
+    }
+
+    /**
      * Load all assets (manual + CEX) with caching
      */
     private function loadAssetsSnapshot(): \Illuminate\Support\Collection
@@ -137,6 +298,8 @@ class BalanceAlertService
         $cacheKey = 'balance_alert:assets_snapshot:' . $this->getAssetsFingerprint();
 
         return Cache::remember($cacheKey, self::ASSET_SNAPSHOT_TTL, function () {
+            $hideLowValue = config('services.balance_alert.hide_low_value_assets_enabled', false);
+
             $manualAssets = Asset::all(['id', 'symbol', 'token_name', 'coingecko_id', 'token_amount', 'value_usd', 'source_type', 'source_name', 'network', 'label', 'label_id'])
                 ->map(function ($asset) {
                     return [
@@ -156,7 +319,9 @@ class BalanceAlertService
 
             $autoAssets = CexSyncedAsset::query()
                 ->where('is_active', true)
-                ->where('value_usd', '>=', self::LOW_VALUE_ASSET_THRESHOLD)
+                ->when($hideLowValue, function ($query) {
+                    return $query->where('value_usd', '>=', self::LOW_VALUE_ASSET_THRESHOLD);
+                })
                 ->get(['id', 'symbol', 'token_name', 'coingecko_id', 'token_amount', 'value_usd', 'exchange', 'account_id', 'account_label', 'source_name', 'network', 'label', 'label_id'])
                 ->map(function ($asset) {
                     return [
@@ -174,9 +339,13 @@ class BalanceAlertService
                     ];
                 });
 
-            return $manualAssets->concat($autoAssets)
-                ->filter(fn($a) => ($a['value_usd'] ?? 0) >= self::LOW_VALUE_ASSET_THRESHOLD)
-                ->values();
+            $assets = $manualAssets->concat($autoAssets);
+
+            if ($hideLowValue) {
+                $assets = $assets->filter(fn($a) => ($a['value_usd'] ?? 0) >= self::LOW_VALUE_ASSET_THRESHOLD);
+            }
+
+            return $assets->values();
         });
     }
 
@@ -290,6 +459,60 @@ class BalanceAlertService
     }
 
     /**
+     * Resolve canonical symbols: assets sharing the same coingecko_id
+     * get the same canonical symbol (prefer the shorter one, e.g. USDT over Tether).
+     * This prevents duplicate pool entries for the same coin.
+     */
+    private function resolveCanonicalSymbols(\Illuminate\Support\Collection $assets): \Illuminate\Support\Collection
+    {
+        $trackedTokens = \DB::table('tracked_tokens')->get()->keyBy('coingecko_id');
+
+        $grouped = $assets->groupBy('coingecko_id')->filter(fn($g, $id) => $id && $g->count() > 1);
+        $canonicalMap = [];
+
+        foreach ($grouped as $coingeckoId => $group) {
+            $trackedInfo = $trackedTokens->get($coingeckoId);
+            $trackedSymbol = $trackedInfo ? strtoupper(trim((string) ($trackedInfo->symbol ?? ''))) : '';
+
+            $ourSymbols = $group->pluck('symbol')->map(fn($s) => strtoupper(trim((string) $s)))->unique();
+
+            if ($trackedSymbol && $ourSymbols->contains($trackedSymbol)) {
+                $canonicalMap[$coingeckoId] = $trackedSymbol;
+            } else {
+                // Pick the shortest symbol as canonical
+                $canonicalMap[$coingeckoId] = $ourSymbols->sortBy(fn($s) => strlen($s))->first();
+            }
+        }
+
+        if (empty($canonicalMap)) {
+            return $assets;
+        }
+
+        return $assets->map(function ($asset) use ($canonicalMap) {
+            $cgId = $asset['coingecko_id'] ?? '';
+            if ($cgId !== '' && isset($canonicalMap[$cgId])) {
+                $asset['symbol'] = $canonicalMap[$cgId];
+            }
+            return $asset;
+        })->groupBy(function ($asset) {
+            // Merge values for assets that now share the same symbol + coingecko_id
+            return ($asset['coingecko_id'] ?? '') . '::' . ($asset['symbol'] ?? '');
+        })->map(function ($group) {
+            $first = $group->first();
+            if ($group->count() > 1) {
+                $first['token_amount'] = $group->sum('token_amount');
+                $first['value_usd'] = $group->sum('value_usd');
+                // Combine source info
+                $sourceTypes = $group->pluck('source_type')->filter()->unique()->values()->implode(',');
+                $sourceNames = $group->pluck('source_name')->filter()->unique()->values()->implode(',');
+                $first['source_type'] = $sourceTypes ?: ($first['source_type'] ?? 'manual');
+                $first['source_name'] = $sourceNames ?: ($first['source_name'] ?? '');
+            }
+            return $first;
+        })->values();
+    }
+
+    /**
      * Build allocations from categories + input overrides
      */
     private function buildAllocations(array $input, \Illuminate\Support\Collection $assets, float $totalValue): array
@@ -297,10 +520,12 @@ class BalanceAlertService
         $categoryAllocations = $this->getCategoryAllocations($input);
         $symbolTargets = collect($input['target_allocations'] ?? []);
 
-        // Group assets by symbol
-        $tokenValueMap = $assets->groupBy('symbol')->map(function ($items) {
+        // Group assets by symbol (uppercased keys for consistent matching)
+        $tokenValueMap = $assets->groupBy(function ($asset) {
+            return strtoupper(trim((string) ($asset['symbol'] ?? '')));
+        })->map(function ($items) {
             return (float) $items->sum('value_usd');
-        });
+        })->filter(fn($v, $k) => $k !== '');
 
         $expanded = [];
         foreach ($categoryAllocations as $item) {
@@ -450,11 +675,12 @@ class BalanceAlertService
         $flatItems = collect($rebalanceResult['items'] ?? [])->values();
         $allocationSourceMap = collect($this->getCategoryAllocations($input))->keyBy('id');
 
-        $groupedItems = $flatItems
+        $grouped = $flatItems
             ->groupBy(function ($item) {
                 $id = (string) ($item['id'] ?? '');
                 return str_contains($id, '|') ? explode('|', $id, 2)[0] : $id;
-            })
+            });
+        $groupedItems = collect($grouped)
             ->map(function ($groupItems, $groupId) use ($allocationSourceMap) {
                 $groupItems = collect($groupItems)->values();
                 $source = $allocationSourceMap->get($groupId, []);

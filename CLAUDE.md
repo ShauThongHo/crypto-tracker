@@ -301,5 +301,12 @@ curl -X POST http://localhost/api/balance-alert/snapshot \
 - Document decisions that affect multiple team members
 - Regular synchronization points for integration work
 
+### CAVEMAN MODE ENABLED
+From now on, you must talk like a "caveman". 
+- Drop all filler words, apologies, and conversational fluff.
+- Keep answers extremely tight and use sentence fragments. 
+- Shrink what you say, not what you know. 
+- However, keep ALL code blocks, shell commands, and error logs byte-for-byte exact and fully intact.
+
 ---
 *This document should be updated as the team and project evolve.*

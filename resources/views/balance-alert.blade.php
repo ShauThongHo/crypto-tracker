@@ -201,7 +201,11 @@
                                     <div class="text-[11px] uppercase tracking-wider text-slate-500">暂时未分配币种</div>
                                     <div class="text-[11px] text-slate-400">拖回这里即可取消分配</div>
                                 </div>
-                                <div id="tokenPool" class="h-[380px] overflow-y-auto bg-slate-950 border border-dashed border-slate-700 rounded-xl p-2 flex flex-wrap content-start gap-2"></div>
+                                <div id="tokenPool" class="h-[340px] overflow-y-auto bg-slate-950 border border-dashed border-slate-700 rounded-xl p-2 flex flex-wrap content-start gap-2"></div>
+                                <div class="mt-2 flex gap-2">
+                                    <input id="manualSymbolInput" type="text" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs placeholder:text-slate-500" placeholder="输入币种简写，如 USDT 回车添加" />
+                                    <button id="manualSymbolAddBtn" class="px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs">添加</button>
+                                </div>
                             </div>
                         </div>
                     </div>

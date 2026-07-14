@@ -5,8 +5,13 @@ namespace App\Http\Controllers\API;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\ExchangeAccount;
+use App\Models\CexSyncedAsset;
 use App\Services\CexSyncService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 
 class CEXSyncController extends Controller
 {
@@ -128,7 +133,7 @@ class CEXSyncController extends Controller
         $exchange = strtolower((string) ($account->exchange ?? ''));
         $label = trim((string) ($account->label ?? ''));
 
-        $matchedIds = \App\Models\CexSyncedAsset::query()
+        $matchedIds = CexSyncedAsset::query()
             ->where('exchange', $exchange)
             ->get()
             ->filter(function ($asset) use ($accountId, $exchange, $label) {
@@ -153,7 +158,7 @@ class CEXSyncController extends Controller
             ->values();
 
         if ($matchedIds->isNotEmpty()) {
-            \App\Models\CexSyncedAsset::query()->whereIn('_id', $matchedIds->all())->delete();
+            CexSyncedAsset::query()->whereIn('_id', $matchedIds->all())->delete();
         }
 
         $account->delete();
@@ -225,23 +230,73 @@ class CEXSyncController extends Controller
     public function syncStatus()
     {
         return response()->json([
-            'status' => \Illuminate\Support\Facades\Cache::get('sync_status', 'idle'),
-            'last_sync' => \Illuminate\Support\Facades\Cache::get('last_sync_at', '从未同步'),
+            'status' => Cache::get('sync_status', 'idle'),
+            'last_sync' => Cache::get('last_sync_at', '从未同步'),
         ]);
     }
 
     public function getExchangeRate()
     {
-        $rate = \Illuminate\Support\Facades\Cache::remember('usd_myr_rate', 3600, function () {
-            $res = \Illuminate\Support\Facades\Http::get("https://api.frankfurter.app/latest?from=USD&to=MYR");
-            return $res->successful() ? (float) $res->json()['rates']['MYR'] : 4.72;
-        });
+        try {
+            $rate = Cache::remember('usd_myr_rate', 300, function () {
+                $res = Http::timeout(10)->get("https://api.frankfurter.app/latest?from=USD&to=MYR");
+                return $res->successful() ? (float) $res->json()['rates']['MYR'] : 4.72;
+            });
+        } catch (\Throwable $e) {
+            Log::warning('Exchange rate cache/API failed, using default', ['error' => $e->getMessage()]);
+            $rate = 4.72;
+        }
         return response()->json(['rate' => $rate]);
+    }
+
+    public function manualSync()
+    {
+        try {
+            $cexSync = app(CexSyncService::class)->syncEnabledAccounts('manual-sync');
+            Artisan::call('app:sync-crypto-data');
+
+            return response()->json([
+                'status' => 'success',
+                'last_sync' => Cache::get('last_sync_at'),
+                'cex_sync' => $cexSync,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function getCexAssets()
+    {
+        $assets = CexSyncedAsset::query()
+            ->get()
+            ->sortByDesc(function ($asset) {
+                return (float) ($asset->value_usd ?? 0);
+            })
+            ->values()
+            ->map(function ($asset) {
+                return [
+                    'id' => (string) $asset->id,
+                    'exchange' => (string) ($asset->exchange ?? ''),
+                    'account_id' => (string) ($asset->account_id ?? ''),
+                    'account_label' => (string) ($asset->account_label ?? ''),
+                    'source_name' => (string) ($asset->source_name ?? ''),
+                    'symbol' => strtoupper((string) ($asset->symbol ?? '')),
+                    'token_name' => (string) ($asset->token_name ?? ''),
+                    'coingecko_id' => (string) ($asset->coingecko_id ?? ''),
+                    'token_amount' => (float) ($asset->token_amount ?? 0),
+                    'value_usd' => (float) ($asset->value_usd ?? 0),
+                    'is_active' => (bool) ($asset->is_active ?? false),
+                    'last_synced_at' => $asset->last_synced_at ? Carbon::parse($asset->last_synced_at)->toDateTimeString() : null,
+                ];
+            })
+            ->values();
+
+        return response()->json($assets);
     }
 
     public function deleteCexAsset($id)
     {
-        $asset = \App\Models\CexSyncedAsset::find($id);
+        $asset = CexSyncedAsset::find($id);
         if (!$asset) {
             return response()->json(['status' => 'error', 'message' => '资产不存在'], 404);
         }

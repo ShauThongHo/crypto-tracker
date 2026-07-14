@@ -158,7 +158,7 @@ class RebalanceService
         ];
     }
 
-    private function buildSummary(float $totalBuy, float $totalSell): array
+    public function buildSummary(float $totalBuy, float $totalSell): array
     {
         $net = $totalBuy - $totalSell;
 
@@ -185,7 +185,7 @@ class RebalanceService
         return number_format($value, 2, '.', ',');
     }
 
-    private function toFloatOutput(string $value): float
+    public function toFloatOutput(string $value): float
     {
         return round((float) $value, 8);
     }
@@ -195,7 +195,7 @@ class RebalanceService
         return rtrim(rtrim(number_format((float) $value, 10, '.', ''), '0'), '.');
     }
 
-    private function normalizeNumber($value): string
+    public function normalizeNumber($value): string
     {
         if ($value === null || $value === '') {
             return '0';
@@ -224,7 +224,7 @@ class RebalanceService
         return (string) $value;
     }
 
-    private function add(string $left, string $right): string
+    public function add(string $left, string $right): string
     {
         if (function_exists('bcadd')) {
             return bcadd($this->normalizeNumber($left), $this->normalizeNumber($right), $this->scale);
@@ -233,7 +233,7 @@ class RebalanceService
         return (string) ((float) $left + (float) $right);
     }
 
-    private function subtract(string $left, string $right): string
+    public function subtract(string $left, string $right): string
     {
         if (function_exists('bcsub')) {
             return bcsub($this->normalizeNumber($left), $this->normalizeNumber($right), $this->scale);
@@ -242,7 +242,7 @@ class RebalanceService
         return (string) ((float) $left - (float) $right);
     }
 
-    private function multiply(string $left, string $right): string
+    public function multiply(string $left, string $right): string
     {
         if (function_exists('bcmul')) {
             return bcmul($this->normalizeNumber($left), $this->normalizeNumber($right), $this->scale);
@@ -251,7 +251,7 @@ class RebalanceService
         return (string) ((float) $left * (float) $right);
     }
 
-    private function divide(string $left, string $right): string
+    public function divide(string $left, string $right): string
     {
         if ($this->compare($right, '0') === 0) {
             return '0';
@@ -264,7 +264,7 @@ class RebalanceService
         return (string) ((float) $left / (float) $right);
     }
 
-    private function compare(string $left, string $right): int
+    public function compare(string $left, string $right): int
     {
         if (function_exists('bccomp')) {
             return bccomp($this->normalizeNumber($left), $this->normalizeNumber($right), $this->scale);
@@ -273,7 +273,7 @@ class RebalanceService
         return ((float) $left) <=> ((float) $right);
     }
 
-    private function abs(string $value): string
+    public function abs(string $value): string
     {
         if ($this->compare($value, '0') < 0) {
             return $this->subtract('0', $value);
